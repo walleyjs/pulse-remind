@@ -56,6 +56,4 @@ Or connect over HTTP JSON-RPC at:
 ### 3. ChatGPT Custom GPT Actions (OpenAPI 3.1)
 Import the OpenAPI schema directly from:
 - `GET http://localhost:3456/api/openapi.json`
-# pulse-remind
-# pulse-remind
-# pulse-remind
+

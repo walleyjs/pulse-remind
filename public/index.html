@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PulseRemind — AI Chat Opportunity Reminder & Web Monitor</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <div class="brand-title">PulseRemind <span class="brand-tag">MCP + Web Monitor</span></div>
+          <div class="brand-subtitle">Catches future-dated scholarships &amp; plans from AI chats and alerts you the moment they open</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-secondary" id="openMcpModalBtn">
+          🔌 Connect to Claude / ChatGPT (MCP)
+        </button>
+        <button type="button" class="btn btn-secondary" id="checkAllNowBtn">
+          🔄 Check All Pages Now
+        </button>
+        <button type="button" class="btn btn-primary" id="openCreateModalBtn">
+          + New Watch
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Live End-to-End Test Simulator Bar -->
+    <section class="simulator-panel" aria-labelledby="simHeading">
+      <div class="simulator-header">
+        <div>
+          <span class="eyebrow">🔬 Interactive End-to-End Demo Control</span>
+          <h2 id="simHeading">Simulated External Scholarship Portals</h2>
+          <p class="muted">
+            Flip any scholarship portal below from <strong>Closed</strong> to <strong>Open</strong> to watch PulseRemind scrape the page, detect the opening &amp; deadline, and dispatch Email, In-App, and Messaging notifications in real time.
+          </p>
+        </div>
+      </div>
+      <div class="portal-grid" id="demoPortalsContainer">
+        <!-- Populated by app.js -->
+      </div>
+    </section>
+
+    <div class="workspace-grid">
+      <!-- Left Column: AI Chat Extractor + Active Watches -->
+      <div class="main-column">
+        <!-- AI Chat Extractor Playground -->
+        <section class="card chat-extractor-card" aria-labelledby="chatSimTitle">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">💬 AI Conversation Hook (`extract_watches_from_chat` MCP Tool)</span>
+              <h2 id="chatSimTitle">Simulate Planning in an AI Chat</h2>
+            </div>
+            <div class="preset-buttons">
+              <button type="button" class="chip-btn" data-preset="end-of-month">Preset: End of Month Scholarship</button>
+              <button type="button" class="chip-btn" data-preset="early-next-year">Preset: Early Next Year Grant</button>
+              <button type="button" class="chip-btn" data-preset="multi">Preset: Multi-Scholarship Plan</button>
+            </div>
+          </div>
+          <p class="muted">
+            Paste or edit a conversation snippet where you and an LLM discuss scholarships or applications that aren't open yet. PulseRemind extracts the target window, context, and URL and sets a web-monitored reminder.
+          </p>
+          <form id="chatExtractForm" class="extract-form">
+            <label for="chatTranscriptInput" class="sr-only">AI Chat Transcript</label>
+            <textarea
+              id="chatTranscriptInput"
+              rows="4"
+              required
+              placeholder="e.g., We are planning my MSc applications. The Global AI Graduate Scholarship ($45k) won't open until the end of this month, and the Oxford Clarendon Fellowship opens early next year (January 2027)..."
+            >User: I'm planning my Fall 2027 Master's applications, but the Horizon Global AI Fellowship won't open until the end of this month, and the Commonwealth Emerging Leaders Grant doesn't open until early next year (January 2027).
+Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemind web watch for both so you get notified the day their portals open!</textarea>
+            <div class="extract-actions">
+              <div class="input-inline">
+                <label for="extractEmailInput">Notify Email:</label>
+                <input type="email" id="extractEmailInput" value="student@university.edu" required />
+              </div>
+              <button type="submit" class="btn btn-primary" id="extractSubmitBtn">
+                ✨ Extract &amp; Schedule Reminders from Chat
+              </button>
+            </div>
+          </form>
+          <div id="extractResultBox" class="extract-result hidden" aria-live="polite"></div>
+        </section>
+
+        <!-- Active Watches List -->
+        <section class="card" aria-labelledby="watchesHeading">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">🎯 Monitored Opportunities &amp; Scheduled Reminders</span>
+              <h2 id="watchesHeading">Your AI Chat Watches <span id="watchesCountBadge" class="count-pill">0</span></h2>
+            </div>
+            <div class="filter-tabs" role="tablist" aria-label="Filter watches by status">
+              <button type="button" class="filter-tab active" data-status="all">All</button>
+              <button type="button" class="filter-tab" data-status="active_monitoring">Monitoring</button>
+              <button type="button" class="filter-tab" data-status="hibernating">Hibernating (Future Window)</button>
+              <button type="button" class="filter-tab" data-status="triggered_open">Open Now!</button>
+            </div>
+          </div>
+
+          <div id="watchesListContainer" class="watches-list">
+            <!-- Populated by app.js -->
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Notifications Feed, Channel Config, & Scraper Logs -->
+      <aside class="side-column">
+        <!-- Notifications Feed -->
+        <section class="card" aria-labelledby="notifHeading">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">🔔 Customer Alert Dispatcher</span>
+              <h2 id="notifHeading">
+                Notifications Feed
+                <span id="unreadBadge" class="unread-pill hidden">0 new</span>
+              </h2>
+            </div>
+            <button type="button" class="btn-text" id="markReadBtn">Mark all read</button>
+          </div>
+          <div id="notificationsContainer" class="notifications-list">
+            <!-- Populated by app.js -->
+          </div>
+        </section>
+
+        <!-- Notification Channels Config -->
+        <section class="card" aria-labelledby="channelsHeading">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">📡 Delivery Channels</span>
+              <h2 id="channelsHeading">Email &amp; Messaging Hooks</h2>
+            </div>
+            <button type="button" class="btn btn-sm btn-secondary" id="testChannelsBtn">
+              Send Test Alert
+            </button>
+          </div>
+          <div id="channelsConfigContainer" class="channels-list">
+            <!-- Populated by app.js -->
+          </div>
+        </section>
+
+        <!-- Recent Web Scraper Check Logs -->
+        <section class="card" aria-labelledby="logsHeading">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">🕵️ Web Verification Engine</span>
+              <h2 id="logsHeading">Recent Page Check Logs</h2>
+            </div>
+          </div>
+          <div id="checkLogsContainer" class="logs-list">
+            <!-- Populated by app.js -->
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <!-- Create New Watch Modal Dialog (using modern closedby="any") -->
+  <dialog id="createWatchDialog" closedby="any" aria-labelledby="createWatchDialogTitle">
+    <div class="dialog-content">
+      <div class="dialog-header">
+        <h2 id="createWatchDialogTitle">Create Opportunity Watch</h2>
+        <button type="button" class="close-icon-btn" id="closeCreateModalBtn" aria-label="Close modal">&times;</button>
+      </div>
+      <form id="createWatchForm" class="modal-form">
+        <div class="form-group">
+          <label for="watchTitle">Opportunity / Scholarship Name *</label>
+          <input type="text" id="watchTitle" name="title" required placeholder="e.g., Rhodes Global Scholarship 2027" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="watchWindowLabel">Expected Opening Window *</label>
+            <input type="text" id="watchWindowLabel" name="window_label" required placeholder="e.g., End of this month, Early next year" value="End of Month (Oct 2026)" />
+          </div>
+          <div class="form-group">
+            <label for="watchWindowDate">Target Window Start Date</label>
+            <input type="date" id="watchWindowDate" name="window_start_date" value="2026-10-28" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="watchTargetUrl">Scholarship / Application URL to Monitor</label>
+          <input type="url" id="watchTargetUrl" name="target_url" placeholder="http://localhost:3456/demo/scholarships/global-ai-fellowship" />
+        </div>
+        <div class="form-group">
+          <label for="watchCondition">Opening Condition to Detect *</label>
+          <input type="text" id="watchCondition" name="condition_text" required value="Applications are open for the 2027 cohort" />
+        </div>
+        <div class="form-group">
+          <label for="watchContext">AI Chat Planning Context *</label>
+          <textarea id="watchContext" name="chat_context" rows="3" required placeholder="Notes from your AI chat (e.g., required essays, references, degree track)..."></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="watchEmail">Notification Email</label>
+            <input type="email" id="watchEmail" name="recipient_email" value="student@university.edu" />
+          </div>
+          <div class="form-group">
+            <label>Alert Channels</label>
+            <div class="checkbox-row">
+              <label><input type="checkbox" name="channel" value="in_app" checked /> In-App</label>
+              <label><input type="checkbox" name="channel" value="email" checked /> Email</label>
+              <label><input type="checkbox" name="channel" value="slack" /> Slack</label>
+              <label><input type="checkbox" name="channel" value="telegram" /> Telegram</label>
+              <label><input type="checkbox" name="channel" value="whatsapp" /> WhatsApp</label>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" class="btn btn-secondary" id="cancelCreateModalBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Watch &amp; Monitor</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MCP & LLM Tool Connection Modal Dialog (using modern closedby="any") -->
+  <dialog id="mcpConfigDialog" closedby="any" aria-labelledby="mcpDialogTitle">
+    <div class="dialog-content">
+      <div class="dialog-header">
+        <h2 id="mcpDialogTitle">🔌 Connect PulseRemind to AI Chats (MCP &amp; OpenAPI)</h2>
+        <button type="button" class="close-icon-btn" id="closeMcpModalBtn" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="mcp-modal-body">
+        <p class="muted">
+          Add PulseRemind to <strong>Claude Desktop</strong>, <strong>Cursor</strong>, <strong>Antigravity</strong>, or <strong>ChatGPT Custom Actions</strong> so the LLM automatically schedules reminders whenever you mention scholarships or applications opening in the future.
+        </p>
+        <h3>1. Claude Desktop / Cursor / Antigravity (`mcpServers` config)</h3>
+        <pre class="code-block" id="mcpConfigSnippet"></pre>
+
+        <h3>2. HTTP JSON-RPC &amp; OpenAPI Tool Endpoints</h3>
+        <ul class="endpoint-list">
+          <li><strong>MCP HTTP JSON-RPC:</strong> <code>POST http://localhost:3456/mcp</code></li>
+          <li><strong>ChatGPT Actions OpenAPI Spec:</strong> <a href="/api/openapi.json" target="_blank"><code>GET /api/openapi.json</code></a></li>
+          <li><strong>Available MCP Tools:</strong> <code>create_opportunity_watch</code>, <code>extract_watches_from_chat</code>, <code>list_active_watches</code>, <code>check_watch_now</code>, <code>update_or_cancel_watch</code></li>
+        </ul>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" class="btn btn-primary" id="doneMcpModalBtn">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

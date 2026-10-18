@@ -1,0 +1,15 @@
+{
+  "name": "pulseremind-ai-chat-tools",
+  "version": "1.0.0",
+  "description": "AI Chat Opportunity Reminder & Web-Monitoring MCP Server, REST Tool API, and Multi-Channel Notification Service",
+  "type": "module",
+  "scripts": {
+    "start": "node --no-warnings src/index.ts",
+    "dev": "node --watch --no-warnings src/index.ts",
+    "mcp": "node --no-warnings src/pkg/mcp/stdio-server.ts",
+    "test": "node --test --no-warnings tests/e2e.test.ts"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  }
+}
