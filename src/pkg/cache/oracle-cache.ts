@@ -5,10 +5,12 @@ export interface CachedResponseEntry {
   httpStatus: number;
   queryUrl: string;
   fetchedAtMs: number;
+  etag?: string;
+  lastModified?: string;
 }
 
 /**
- * Dual-Mode Oracle Cache & Outbound Rate Limiter:
+ * Dual-Mode Oracle Cache, Conditional HTTP Revalidator (ETag / Last-Modified) & Outbound Rate Limiter:
  * - L1: Fast in-memory Map for sub-millisecond local & single-node lookups.
  * - L2: Optional Upstash Redis REST backend (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`)
  *   for distributed multi-worker deduplication across cloud containers.
@@ -27,10 +29,28 @@ export class OracleCacheAndLimiter {
     const entry = this.l1Cache.get(key);
     if (!entry) return null;
     if (Date.now() - entry.fetchedAtMs >= ttlMs) {
-      this.l1Cache.delete(key);
       return null;
     }
     return entry;
+  }
+
+  /**
+   * Returns an existing cache entry even if its TTL has expired so the adapter can send
+   * `If-None-Match` (ETag) or `If-Modified-Since` conditional HTTP headers.
+   */
+  getStaleEntry(key: string): CachedResponseEntry | null {
+    return this.l1Cache.get(key) || null;
+  }
+
+  /**
+   * Refreshes `fetchedAtMs` when an upstream server responds with `304 Not Modified`.
+   */
+  touchRevalidated(key: string): CachedResponseEntry | null {
+    const existing = this.l1Cache.get(key);
+    if (!existing) return null;
+    existing.fetchedAtMs = Date.now();
+    this.l1Cache.set(key, existing);
+    return existing;
   }
 
   async getDistributed(

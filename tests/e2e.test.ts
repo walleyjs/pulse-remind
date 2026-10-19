@@ -172,7 +172,9 @@ test('3. Octopus ResolutionEngine optimizations: 120s Deduplication Cache, Entit
 
 test('4. MCP stdio server responds to JSON-RPC 2.0 initialize and tools/list over stdin/stdout', async () => {
   const { spawn } = await import('node:child_process');
+  const path = await import('node:path');
   const child = spawn(process.execPath, ['--no-warnings', 'src/pkg/mcp/stdio-server.ts'], {
+    cwd: path.resolve(import.meta.dirname, '..'),
     env: { ...process.env, PULSEREMIND_DB_PATH: ':memory:' },
     stdio: ['pipe', 'pipe', 'pipe']
   });
@@ -570,6 +572,260 @@ test('11. Seamless Ask-Once In-Chat Email Binding (set_notification_destination)
   assert.ok(icsText.includes('BEGIN:VALARM'));
   assert.ok(icsText.includes('Swedish Institute Scholarship'));
 });
+
+test('12. Cryptographic Web Push (RFC 8291 aes128gcm & RFC 8292 VAPID ES256) round-trip verification', async () => {
+  const {
+    generateVapidKeys,
+    buildVapidAuthHeader,
+    verifyVapidJwt,
+    encryptWebPushPayload,
+    decryptWebPushPayload,
+    base64UrlEncode
+  } = await import('../src/pkg/webpush/crypto.ts');
+  const crypto = await import('node:crypto');
+
+  // 12a. VAPID ES256 keypair generation, JWT signing, and cryptographic signature verification
+  const vapidKeys = generateVapidKeys();
+  assert.ok(vapidKeys.publicKey.length >= 80, 'Public key should be base64url uncompressed P-256');
+  assert.ok(vapidKeys.privateKey.length >= 40, 'Private key should be base64url scalar');
+
+  const endpoint = 'https://fcm.googleapis.com/fcm/send/sample-subscription-id';
+  const vapidAuth = buildVapidAuthHeader(endpoint, 'mailto:test@pulseremind.ai', vapidKeys);
+  assert.ok(vapidAuth.authorization.startsWith('vapid t='));
+  assert.ok(vapidAuth.authorization.includes(', k='));
+
+  const jwtVerify = verifyVapidJwt(vapidAuth.jwt, vapidKeys.publicKey);
+  assert.equal(jwtVerify.valid, true, 'VAPID ES256 JWT must verify against the public key');
+  assert.equal(jwtVerify.payload?.aud, 'https://fcm.googleapis.com');
+  assert.equal(jwtVerify.payload?.sub, 'mailto:test@pulseremind.ai');
+
+  // 12b. Subscriber keypair generation (P-256 + 16-byte auth secret)
+  const clientEcdh = crypto.createECDH('prime256v1');
+  clientEcdh.generateKeys();
+  const clientPubBase64 = base64UrlEncode(clientEcdh.getPublicKey());
+  const clientPrivBase64 = base64UrlEncode(clientEcdh.getPrivateKey());
+  const authSecretBuf = crypto.randomBytes(16);
+  const authSecretBase64 = base64UrlEncode(authSecretBuf);
+
+  // 12c. Encrypt payload under RFC 8291 (aes128gcm)
+  const originalMessage = JSON.stringify({
+    title: 'PulseRemind: NeurIPS 2026 Paper Deadline',
+    body: 'Action Checklist: Submit abstract 24h prior, verify PDF checklist',
+    url: 'https://neurips.cc'
+  });
+
+  const encrypted = encryptWebPushPayload(originalMessage, {
+    p256dh: clientPubBase64,
+    auth: authSecretBase64
+  });
+
+  assert.equal(encrypted.contentEncoding, 'aes128gcm');
+  assert.ok(encrypted.ciphertext.length > originalMessage.length + 86, 'Payload should include 86-byte header + tag');
+
+  // 12d. Decrypt payload using subscriber keys and verify round-trip identity
+  const decrypted = decryptWebPushPayload(
+    encrypted.ciphertext,
+    clientPrivBase64,
+    clientPubBase64,
+    authSecretBase64
+  );
+  assert.equal(decrypted, originalMessage, 'Decrypted payload must match original cleartext exactly');
+});
+
+test('13. RFC 5545 .ics Structural Compliance: 75-Octet Folding, CRLF, Monotonic SEQUENCE, and Dual VALARMs', async () => {
+  const { buildWatchIcsFeed, validateIcsCompliance, foldIcsLine } = await import(
+    '../src/pkg/calendar/ics.ts'
+  );
+
+  // Test foldIcsLine
+  const longLine =
+    'DESCRIPTION:Action Checklist: 1. Confirm your eligibility 2. Prepare statement of purpose 3. Request two academic letters 4. Submit before the closing window arrives';
+  const folded = foldIcsLine(longLine, 75);
+  assert.ok(folded.includes('\r\n '), 'Should fold using CRLF followed by single space');
+  for (const chunk of folded.split('\r\n')) {
+    assert.ok(Buffer.byteLength(chunk, 'utf-8') <= 75, 'Folded line segment must be <= 75 octets');
+  }
+
+  // Test buildWatchIcsFeed compliance
+  const sampleWatch = watchService.createWatch({
+    title: 'Very Long Event Title For Conference And Hackathon In San Francisco 2027',
+    chat_context:
+      'Checklist items: Verify flights and hotels; submit abstract; request travel stipend from department; register before early-bird rates expire.',
+    target_url: 'https://conference.example.org/registration',
+    window_start_date: '2027-04-15'
+  });
+
+  const feedText = buildWatchIcsFeed([sampleWatch], 'https://pulse-remind.onrender.com');
+  const compliance = validateIcsCompliance(feedText);
+  assert.equal(compliance.valid, true, `ICS compliance errors: ${compliance.errors.join(', ')}`);
+  assert.equal(compliance.hasCrlf, true, 'ICS must use CRLF line endings');
+  assert.ok(compliance.maxLineOctets <= 75, `Max line octets (${compliance.maxLineOctets}) must be <= 75`);
+  assert.ok(compliance.sequences.length > 0, 'Should include SEQUENCE fields');
+  assert.ok(feedText.includes('TRIGGER:-PT24H'), 'Must include 24h VALARM');
+  assert.ok(feedText.includes('TRIGGER:-PT15M'), 'Must include 15m VALARM');
+
+  watchService.deleteWatch(sampleWatch.id);
+});
+
+test('14. Structured State Extraction: Schema.org JSON-LD (InStock vs SoldOut) & SSR __NEXT_DATA__ Hydration', async () => {
+  const { evaluateWebpageSignals } = await import('../src/internal/resolution/validator.ts');
+
+  // 14a. Schema.org JSON-LD InStock
+  const jsonLdInStockHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Event",
+        "name": "Horizon Global AI Fellowship 2027",
+        "startDate": "2027-02-01",
+        "offers": {
+          "@type": "Offer",
+          "availability": "https://schema.org/InStock",
+          "url": "https://horizon.example.org/apply-2027",
+          "validThrough": "2027-03-31"
+        }
+      }
+      </script>
+    </head>
+    <body>
+      <main><h1>Horizon Global AI Fellowship</h1></main>
+    </body>
+    </html>
+  `;
+
+  const w1 = watchService.createWatch({
+    title: 'Horizon Global AI Fellowship 2027',
+    chat_context: 'Test JSON-LD InStock extraction'
+  });
+
+  const signals1 = evaluateWebpageSignals(w1, jsonLdInStockHtml, 'https://horizon.example.org');
+  assert.equal(signals1.isOpen, true, 'Should detect open from JSON-LD InStock');
+  assert.equal(signals1.detectedApplyUrl, 'https://horizon.example.org/apply-2027');
+  assert.equal(signals1.detectedDeadline, '2027-03-31');
+
+  // 14b. Schema.org JSON-LD SoldOut
+  const jsonLdSoldOutHtml = `
+    <html>
+    <head>
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Event",
+        "name": "Horizon Global AI Fellowship 2027",
+        "offers": {
+          "@type": "Offer",
+          "availability": "https://schema.org/SoldOut"
+        }
+      }
+      </script>
+    </head>
+    <body><main>Registration info</main></body>
+    </html>
+  `;
+  const signals2 = evaluateWebpageSignals(w1, jsonLdSoldOutHtml, 'https://horizon.example.org');
+  assert.equal(signals2.isOpen, false, 'Should detect closed from JSON-LD SoldOut');
+
+  // 14c. SSR __NEXT_DATA__ state
+  const nextDataHtml = `
+    <html>
+    <body>
+      <main><h1>Stripe Sessions 2027</h1></main>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "cohortYear": 2027,
+            "registrationOpen": true,
+            "registrationUrl": "https://stripe.com/sessions/register",
+            "deadline": "April 1, 2027"
+          }
+        }
+      }
+      </script>
+    </body>
+    </html>
+  `;
+  const w2 = watchService.createWatch({
+    title: 'Stripe Sessions 2027',
+    chat_context: 'Test __NEXT_DATA__ SSR hydration'
+  });
+  const signals3 = evaluateWebpageSignals(w2, nextDataHtml, 'https://stripe.com');
+  assert.equal(signals3.isOpen, true, 'Should detect open from __NEXT_DATA__');
+  assert.equal(signals3.detectedApplyUrl, 'https://stripe.com/sessions/register');
+  assert.equal(signals3.detectedDeadline, 'April 1, 2027');
+
+  watchService.deleteWatch(w1.id);
+  watchService.deleteWatch(w2.id);
+});
+
+test('15. Timezone-Aware & AoE ("Anywhere on Earth" = UTC-12) Deadline Resolution', async () => {
+  const { resolveTimeframeWindow } = await import('../src/internal/extractor/timeframe.ts');
+
+  // Pinned reference: Sunday Oct 18, 2026 12:00 UTC
+  const ref = new Date('2026-10-18T12:00:00Z');
+
+  // 15a. AoE deadline (November 15, 2026 23:59 AoE = 2026-11-16T11:59:00Z UTC)
+  const aoeRes = resolveTimeframeWindow('November 15, 2026 23:59 AoE', ref);
+  assert.equal(aoeRes.window_start_date, '2026-11-15');
+  assert.ok(aoeRes.window_label.includes('AoE (UTC-12)'));
+  assert.equal(aoeRes.exact_utc_iso, '2026-11-16T11:59:00.000Z');
+
+  // 15b. "in 5 days" relative resolution
+  const inDaysRes = resolveTimeframeWindow('in 5 days', ref);
+  assert.equal(inDaysRes.window_start_date, '2026-10-23');
+  assert.ok(inDaysRes.window_label.includes('In 5 Days'));
+
+  // 15c. "next Friday" relative resolution (Oct 18 is Sun -> next Friday is Oct 23)
+  const nextFriRes = resolveTimeframeWindow('next Friday', ref);
+  assert.equal(nextFriRes.window_start_date, '2026-10-23');
+  assert.ok(nextFriRes.window_label.includes('Next Friday'));
+});
+
+test('16. Antigravity PostInvocation Transcript Lifecycle Hook Contract', async () => {
+  const { evaluateTranscriptTurnForHook } = await import('../src/pkg/hooks/post-invocation.ts');
+
+  // Reset saved default email to simulate a user with no pre-bound email
+  notificationService.setSavedDefaultEmail('');
+
+  // Scenario A: User mentions upcoming conference in chat, model forgot to invoke MCP tool
+  const transcriptMissedCapture = `
+{"step_index":1,"type":"USER_INPUT","content":"I need to apply for the NeurIPS 2027 Research Fellowship before the deadline next month. Can you help me review my proposal?"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Sure, let's review your proposal. What is the topic of your research?","tool_calls":[]}
+`;
+  const hookRes1 = await evaluateTranscriptTurnForHook(transcriptMissedCapture);
+  assert.equal(hookRes1.hookAction, 'auto_captured_watch');
+  assert.ok(hookRes1.capturedTitles && hookRes1.capturedTitles.length > 0);
+  assert.ok(
+    hookRes1.injectSteps &&
+      hookRes1.injectSteps.length > 0 &&
+      'ephemeralMessage' in hookRes1.injectSteps[0],
+    'Hook must inject ephemeralMessage when watch captured without bound email'
+  );
+
+  // Scenario B: User replies with their email address in next turn, model forgot set_notification_destination
+  const transcriptEmailReply = `
+{"step_index":1,"type":"USER_INPUT","content":"Please send my reminder to developer@antigravity.ai"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Got it, I noted that.","tool_calls":[]}
+`;
+  const hookRes2 = await evaluateTranscriptTurnForHook(transcriptEmailReply);
+  assert.equal(hookRes2.hookAction, 'auto_bound_email');
+  assert.equal(hookRes2.boundEmail, 'developer@antigravity.ai');
+  assert.ok(
+    hookRes2.injectSteps &&
+      hookRes2.injectSteps.length > 0 &&
+      'ephemeralMessage' in hookRes2.injectSteps[0]
+  );
+
+  // Clean up created test watches
+  for (const title of hookRes1.capturedTitles || []) {
+    const found = watchService.listWatches().find((w) => w.title === title);
+    if (found) watchService.deleteWatch(found.id);
+  }
+});
+
 
 
 

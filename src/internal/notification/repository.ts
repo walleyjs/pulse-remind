@@ -1,11 +1,33 @@
 import crypto from 'node:crypto';
 import { db } from '../../pkg/db/sqlite.ts';
 import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
+import { generateVapidKeys } from '../../pkg/webpush/crypto.ts';
 import type { ChannelConfigRecord, NotificationChannelType, NotificationRecord } from './model.ts';
+
+function mapNotificationRow(r: Record<string, unknown>): NotificationRecord {
+  return {
+    id: String(r.id),
+    watch_id: String(r.watch_id),
+    watch_title: String(r.watch_title),
+    channel: r.channel as NotificationChannelType,
+    recipient: r.recipient ? String(r.recipient) : null,
+    subject: String(r.subject),
+    message: String(r.message),
+    delivery_status: r.delivery_status as 'delivered' | 'simulated' | 'failed',
+    preview_url: r.preview_url ? String(r.preview_url) : null,
+    is_read: Boolean(r.is_read),
+    attempt_count: r.attempt_count !== undefined && r.attempt_count !== null ? Number(r.attempt_count) : 1,
+    next_retry_at:
+      r.next_retry_at !== undefined && r.next_retry_at !== null ? Number(r.next_retry_at) : null,
+    last_error: r.last_error ? String(r.last_error) : null,
+    created_at: String(r.created_at)
+  };
+}
 
 export class NotificationRepository {
   seedDefaultChannels(): void {
     const now = new Date().toISOString();
+    const vapid = generateVapidKeys();
     const defaultChannels: Array<{
       channel: NotificationChannelType;
       enabled: number;
@@ -26,6 +48,18 @@ export class NotificationRepository {
           smtp_user: '',
           smtp_pass: '',
           from_email: 'alerts@pulseremind.ai'
+        }
+      },
+      {
+        channel: 'web_push',
+        enabled: 0,
+        config: {
+          endpoint: '',
+          p256dh: '',
+          auth: '',
+          vapid_public_key: vapid.publicKey,
+          vapid_private_key: vapid.privateKey,
+          vapid_subject: 'mailto:alerts@pulseremind.ai'
         }
       },
       {
@@ -60,28 +94,43 @@ export class NotificationRepository {
     }
   }
 
+  findByIdempotencyKey(idempotencyKey: string): NotificationRecord | null {
+    const row = db
+      .prepare('SELECT * FROM notifications WHERE idempotency_key = ? LIMIT 1')
+      .get(idempotencyKey) as Record<string, unknown> | undefined;
+    return row ? mapNotificationRow(row) : null;
+  }
+
   insert(
-    entry: Omit<NotificationRecord, 'id' | 'created_at' | 'is_read'> & { idempotency_key?: string }
+    entry: Omit<NotificationRecord, 'id' | 'created_at' | 'is_read'> & {
+      idempotency_key?: string;
+    }
   ): { record: NotificationRecord; created: boolean } {
     if (entry.idempotency_key) {
-      const existing = db
-        .prepare('SELECT * FROM notifications WHERE idempotency_key = ? LIMIT 1')
-        .get(entry.idempotency_key) as Record<string, unknown> | undefined;
+      const existing = this.findByIdempotencyKey(entry.idempotency_key);
       if (existing) {
+        // If previously failed and now being retried, update the outbox row in-place
+        if (existing.delivery_status === 'failed') {
+          const nextAttempt = (existing.attempt_count || 1) + 1;
+          db.prepare(`
+            UPDATE notifications
+            SET delivery_status = ?,
+                attempt_count = ?,
+                next_retry_at = ?,
+                last_error = ?
+            WHERE id = ?
+          `).run(
+            entry.delivery_status,
+            nextAttempt,
+            entry.next_retry_at ?? null,
+            entry.last_error ?? null,
+            existing.id
+          );
+          const updated = this.findByIdempotencyKey(entry.idempotency_key)!;
+          return { record: updated, created: true };
+        }
         return {
-          record: {
-            id: String(existing.id),
-            watch_id: String(existing.watch_id),
-            watch_title: String(existing.watch_title),
-            channel: existing.channel as NotificationChannelType,
-            recipient: existing.recipient ? String(existing.recipient) : null,
-            subject: String(existing.subject),
-            message: String(existing.message),
-            delivery_status: existing.delivery_status as 'delivered' | 'simulated' | 'failed',
-            preview_url: existing.preview_url ? String(existing.preview_url) : null,
-            is_read: Boolean(existing.is_read),
-            created_at: String(existing.created_at)
-          },
+          record: existing,
           created: false
         };
       }
@@ -89,10 +138,15 @@ export class NotificationRepository {
 
     const id = 'notif_' + crypto.randomUUID().slice(0, 8);
     const createdAt = new Date().toISOString();
+    const attemptCount = entry.attempt_count ?? 1;
+    const nextRetryAt = entry.next_retry_at ?? null;
+    const lastError = entry.last_error ?? null;
+
     db.prepare(`
       INSERT INTO notifications (
-        id, watch_id, watch_title, channel, recipient, subject, message, delivery_status, preview_url, is_read, created_at, idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        id, watch_id, watch_title, channel, recipient, subject, message, delivery_status,
+        preview_url, is_read, created_at, idempotency_key, attempt_count, next_retry_at, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     `).run(
       id,
       entry.watch_id,
@@ -104,7 +158,10 @@ export class NotificationRepository {
       entry.delivery_status,
       entry.preview_url,
       createdAt,
-      entry.idempotency_key || null
+      entry.idempotency_key || null,
+      attemptCount,
+      nextRetryAt,
+      lastError
     );
 
     const record: NotificationRecord = {
@@ -118,7 +175,10 @@ export class NotificationRepository {
       subject: entry.subject,
       message: entry.message,
       delivery_status: entry.delivery_status,
-      preview_url: entry.preview_url
+      preview_url: entry.preview_url,
+      attempt_count: attemptCount,
+      next_retry_at: nextRetryAt,
+      last_error: lastError
     };
 
     cloudDatabaseSync
@@ -139,19 +199,7 @@ export class NotificationRepository {
       .prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?')
       .all(limit) as Record<string, unknown>[];
 
-    return rows.map((r) => ({
-      id: String(r.id),
-      watch_id: String(r.watch_id),
-      watch_title: String(r.watch_title),
-      channel: r.channel as NotificationChannelType,
-      recipient: r.recipient ? String(r.recipient) : null,
-      subject: String(r.subject),
-      message: String(r.message),
-      delivery_status: r.delivery_status as 'delivered' | 'simulated' | 'failed',
-      preview_url: r.preview_url ? String(r.preview_url) : null,
-      is_read: Boolean(r.is_read),
-      created_at: String(r.created_at)
-    }));
+    return rows.map(mapNotificationRow);
   }
 
   markAllRead(): void {
@@ -216,6 +264,5 @@ export class NotificationRepository {
     });
   }
 }
-
 
 export const notificationRepository = new NotificationRepository();

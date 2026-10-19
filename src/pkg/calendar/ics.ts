@@ -26,6 +26,56 @@ function escapeIcsText(text: string): string {
     .replace(/\r?\n/g, '\\n');
 }
 
+/**
+ * RFC 5545 Section 3.1: Content lines longer than 75 octets MUST be folded
+ * using CRLF followed immediately by a single linear white-space character (SPACE).
+ */
+export function foldIcsLine(line: string, maxOctets = 75): string {
+  if (Buffer.byteLength(line, 'utf-8') <= maxOctets) {
+    return line;
+  }
+  const chunks: string[] = [];
+  let current = '';
+  let currentBytes = 0;
+  let isFirstLine = true;
+
+  for (const char of line) {
+    const charBytes = Buffer.byteLength(char, 'utf-8');
+    const limit = isFirstLine ? maxOctets : maxOctets - 1; // account for leading SPACE on continuation
+    if (currentBytes + charBytes > limit && current.length > 0) {
+      chunks.push(isFirstLine ? current : ` ${current}`);
+      current = char;
+      currentBytes = charBytes;
+      isFirstLine = false;
+    } else {
+      current += char;
+      currentBytes += charBytes;
+    }
+  }
+  if (current.length > 0) {
+    chunks.push(isFirstLine ? current : ` ${current}`);
+  }
+  return chunks.join('\r\n');
+}
+
+/**
+ * Computes a monotonically increasing RFC 5545 SEQUENCE number for a watch
+ * so calendar clients update the existing VEVENT in-place when status, deadline, or checklist changes.
+ */
+export function computeWatchIcsSequence(watch: WatchRecord): number {
+  const explicitSeq = Number(watch.resolution_config?.provider_metadata?.ics_sequence);
+  if (!isNaN(explicitSeq) && explicitSeq >= 0) {
+    return explicitSeq;
+  }
+  let seq = 0;
+  if (watch.recipient_email) seq += 1;
+  if (watch.detected_deadline) seq += 1;
+  if (watch.detected_apply_url) seq += 1;
+  if (watch.status === 'triggered_open') seq += 2;
+  seq += Math.min(10, watch.oracle_responses?.length || 0);
+  return seq;
+}
+
 export interface WatchCalendarLinks {
   google_calendar_url: string;
   ics_download_url: string;
@@ -68,17 +118,30 @@ export function buildWatchIcsFeed(watches: WatchRecord[], baseUrl: string): stri
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, 'Z');
 
-  const events = watches.map((w) => {
+  const lines: string[] = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PulseRemind//AI Chat Event & Web Monitor//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'X-WR-CALNAME:PulseRemind Alerts'
+  ];
+
+  for (const w of watches) {
     const { startUtc, endUtc } = formatIcsDate(w.window_start_date);
     const summary = escapeIcsText(`🔔 ${w.title}`);
     const description = escapeIcsText(
-      `Checklist: ${w.chat_context}\nStatus: ${w.status}\nLink: ${w.target_url || baseUrl}`
+      `Checklist: ${w.chat_context}\nStatus: ${w.status}` +
+        (w.detected_deadline ? `\nDeadline: ${w.detected_deadline}` : '') +
+        `\nLink: ${w.target_url || baseUrl}`
     );
     const url = w.detected_apply_url || w.target_url || baseUrl;
+    const sequence = computeWatchIcsSequence(w);
 
-    return [
+    lines.push(
       'BEGIN:VEVENT',
       `UID:${w.id}@pulseremind.ai`,
+      `SEQUENCE:${sequence}`,
       `DTSTAMP:${nowUtc}`,
       `DTSTART:${startUtc}`,
       `DTEND:${endUtc}`,
@@ -86,23 +149,63 @@ export function buildWatchIcsFeed(watches: WatchRecord[], baseUrl: string): stri
       `DESCRIPTION:${description}`,
       `URL:${escapeIcsText(url)}`,
       'BEGIN:VALARM',
+      'TRIGGER:-PT24H',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:PulseRemind 24h Alert: ${summary}`,
+      'END:VALARM',
+      'BEGIN:VALARM',
       'TRIGGER:-PT15M',
       'ACTION:DISPLAY',
-      `DESCRIPTION:PulseRemind Alert: ${summary}`,
+      `DESCRIPTION:PulseRemind 15m Alert: ${summary}`,
       'END:VALARM',
       'END:VEVENT'
-    ].join('\r\n');
-  });
+    );
+  }
 
-  return [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//PulseRemind//AI Chat Event & Web Monitor//EN',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    'X-WR-CALNAME:PulseRemind Alerts',
-    ...events,
-    'END:VCALENDAR',
-    ''
-  ].join('\r\n');
+  lines.push('END:VCALENDAR');
+  return lines.map((l) => foldIcsLine(l, 75)).join('\r\n') + '\r\n';
+}
+
+/**
+ * Validates RFC 5545 structural and octet-folding compliance on generated .ics text.
+ */
+export function validateIcsCompliance(icsText: string): {
+  valid: boolean;
+  hasCrlf: boolean;
+  maxLineOctets: number;
+  sequences: number[];
+  errors: string[];
+} {
+  const errors: string[] = [];
+  const hasCrlf = icsText.includes('\r\n');
+  if (!hasCrlf) {
+    errors.push('Missing CRLF (\\r\\n) line endings');
+  }
+  const rawLines = icsText.split('\r\n').filter((l) => l.length > 0);
+  let maxLineOctets = 0;
+  const sequences: number[] = [];
+
+  for (const line of rawLines) {
+    const octets = Buffer.byteLength(line, 'utf-8');
+    if (octets > maxLineOctets) maxLineOctets = octets;
+    if (octets > 75) {
+      errors.push(`Line exceeds 75 UTF-8 octets (${octets}): ${line.slice(0, 40)}...`);
+    }
+    const seqMatch = line.match(/^SEQUENCE:(\d+)$/);
+    if (seqMatch) {
+      sequences.push(Number(seqMatch[1]));
+    }
+  }
+
+  if (!icsText.includes('BEGIN:VCALENDAR') || !icsText.includes('END:VCALENDAR')) {
+    errors.push('Missing VCALENDAR envelope');
+  }
+
+  return {
+    valid: errors.length === 0,
+    hasCrlf,
+    maxLineOctets,
+    sequences,
+    errors
+  };
 }

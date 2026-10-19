@@ -62,6 +62,14 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
       }
     }
 
+    const staleEntry = oracleCache.getStaleEntry(cacheKey);
+    const savedEtag =
+      staleEntry?.etag || watch.resolution_config?.provider_metadata?.http_etag || undefined;
+    const savedLastModified =
+      staleEntry?.lastModified ||
+      watch.resolution_config?.provider_metadata?.http_last_modified ||
+      undefined;
+
     let lastError = '';
 
     for (const url of endpoints) {
@@ -90,16 +98,35 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), config.resolution.httpTimeoutMs);
+        const reqHeaders: Record<string, string> = {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        };
+        if (savedEtag && !bypassCache) {
+          reqHeaders['If-None-Match'] = savedEtag;
+        }
+        if (savedLastModified && !bypassCache) {
+          reqHeaders['If-Modified-Since'] = savedLastModified;
+        }
+
         const response = await fetch(url, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9'
-          },
+          headers: reqHeaders,
           signal: controller.signal
         });
         clearTimeout(timeout);
+
+        // Handle HTTP 304 Not Modified conditional revalidation
+        if (response.status === 304 && staleEntry) {
+          const touched = oracleCache.touchRevalidated(cacheKey) || staleEntry;
+          return {
+            html: touched.body,
+            httpStatus: 304,
+            queryUrl: canonicalEndpoint,
+            cacheHit: true
+          };
+        }
 
         if (response.status === 429) {
           lastError = `HTTP 429 Rate Limited on ${url}`;
@@ -112,10 +139,15 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
           continue;
         }
 
+        const respEtag = response.headers.get('etag') || undefined;
+        const respLastMod = response.headers.get('last-modified') || undefined;
+
         oracleCache.set(cacheKey, {
           body: html,
           httpStatus: response.status,
-          queryUrl: canonicalEndpoint
+          queryUrl: canonicalEndpoint,
+          etag: respEtag,
+          lastModified: respLastMod
         });
 
         return { html, httpStatus: response.status, queryUrl: canonicalEndpoint, cacheHit: false };

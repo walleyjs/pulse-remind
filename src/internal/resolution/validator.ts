@@ -110,37 +110,280 @@ export function validateEntityMatch(
   return { valid: false };
 }
 
+export interface StructuredPortalSignals {
+  hasStructuredSignal: boolean;
+  isOpen: boolean | null;
+  confidence: number;
+  source: 'json_ld' | 'next_data' | null;
+  detectedDeadline: string | null;
+  detectedApplyUrl: string | null;
+  detectedOpenDate: string | null;
+  summaryReason: string | null;
+}
+
+function findObjectValues(obj: unknown, collector: Record<string, unknown>[]): void {
+  if (!obj || typeof obj !== 'object') return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) findObjectValues(item, collector);
+    return;
+  }
+  const rec = obj as Record<string, unknown>;
+  collector.push(rec);
+  for (const val of Object.values(rec)) {
+    if (val && typeof val === 'object') {
+      findObjectValues(val, collector);
+    }
+  }
+}
+
 /**
- * Strips site-wide boilerplate (<nav>, <header>, <footer>, <aside>, <script>, <style>)
- * so unrelated navbar/footer CTA buttons never cause false-positive triggers.
+ * Extracts structured state from embedded `<script type="application/ld+json">` (Schema.org Event/Offer/Program)
+ * and SSR hydration blobs (`<script id="__NEXT_DATA__" type="application/json">`).
+ */
+export function extractStructuredPortalState(
+  rawHtml: string,
+  baseUrl: string,
+  targetCohortYear: number | null
+): StructuredPortalSignals {
+  const defaultRes: StructuredPortalSignals = {
+    hasStructuredSignal: false,
+    isOpen: null,
+    confidence: 0,
+    source: null,
+    detectedDeadline: null,
+    detectedApplyUrl: null,
+    detectedOpenDate: null,
+    summaryReason: null
+  };
+
+  // 1. Parse <script type="application/ld+json">
+  const ldRegex = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let ldMatch: RegExpExecArray | null;
+  while ((ldMatch = ldRegex.exec(rawHtml)) !== null) {
+    try {
+      const parsed = JSON.parse(ldMatch[1].trim());
+      const nodes: Record<string, unknown>[] = [];
+      findObjectValues(parsed, nodes);
+
+      for (const node of nodes) {
+        const availability = String(node.availability || '');
+        const deadline =
+          (node.applicationDeadline as string) ||
+          (node.validThrough as string) ||
+          (node.endDate as string) ||
+          null;
+        const startDate =
+          (node.applicationStartDate as string) || (node.startDate as string) || null;
+        const rawUrl = (node.url as string) || null;
+        const resolvedUrl = rawUrl
+          ? (() => {
+              try {
+                return new URL(rawUrl, baseUrl).toString();
+              } catch {
+                return rawUrl;
+              }
+            })()
+          : null;
+
+        // Check cohort year guard on JSON-LD node name/description
+        const nodeText = `${node.name || ''} ${node.description || ''}`;
+        if (targetCohortYear) {
+          const years = (nodeText.match(/\b(202\d)\b/g) || []).map(Number);
+          if (years.length > 0 && !years.includes(targetCohortYear) && years.every((y) => y < targetCohortYear)) {
+            continue;
+          }
+        }
+
+        if (/InStock|PreOrder|OnlineOnly|LimitedAvailability/i.test(availability)) {
+          return {
+            hasStructuredSignal: true,
+            isOpen: true,
+            confidence: 0.97,
+            source: 'json_ld',
+            detectedDeadline: deadline,
+            detectedApplyUrl: resolvedUrl,
+            detectedOpenDate: startDate,
+            summaryReason: `Schema.org JSON-LD availability=${availability}`
+          };
+        }
+        if (/SoldOut|OutOfStock|Discontinued|PreSale/i.test(availability)) {
+          return {
+            hasStructuredSignal: true,
+            isOpen: false,
+            confidence: 0.96,
+            source: 'json_ld',
+            detectedDeadline: deadline,
+            detectedApplyUrl: null,
+            detectedOpenDate: startDate,
+            summaryReason: `Schema.org JSON-LD availability=${availability}`
+          };
+        }
+      }
+    } catch {
+      // Ignore malformed JSON-LD
+    }
+  }
+
+  // 2. Parse Next.js SSR Hydration state (<script id="__NEXT_DATA__" type="application/json">)
+  const nextDataMatch = rawHtml.match(
+    /<script\b[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i
+  );
+  if (nextDataMatch) {
+    try {
+      const parsed = JSON.parse(nextDataMatch[1].trim());
+      const nodes: Record<string, unknown>[] = [];
+      findObjectValues(parsed, nodes);
+
+      for (const node of nodes) {
+        const cohort = Number(node.cohortYear || node.cohort || 0);
+        if (targetCohortYear && cohort > 2020 && cohort < targetCohortYear) {
+          continue;
+        }
+
+        const explicitBool =
+          typeof node.applicationsOpen === 'boolean'
+            ? node.applicationsOpen
+            : typeof node.registrationOpen === 'boolean'
+              ? node.registrationOpen
+              : typeof node.isOpen === 'boolean'
+                ? node.isOpen
+                : null;
+        const statusStr = typeof node.portalStatus === 'string' ? node.portalStatus.toLowerCase() : null;
+
+        if (explicitBool !== null || statusStr === 'open' || statusStr === 'closed') {
+          const isOpen = explicitBool !== null ? explicitBool : statusStr === 'open';
+          const rawApply = (node.applyUrl as string) || (node.registrationUrl as string) || null;
+          const resolvedApply = rawApply
+            ? (() => {
+                try {
+                  return new URL(rawApply, baseUrl).toString();
+                } catch {
+                  return rawApply;
+                }
+              })()
+            : null;
+          return {
+            hasStructuredSignal: true,
+            isOpen,
+            confidence: 0.97,
+            source: 'next_data',
+            detectedDeadline: (node.deadline as string) || (node.applicationDeadline as string) || null,
+            detectedApplyUrl: isOpen ? resolvedApply : null,
+            detectedOpenDate: (node.openDate as string) || null,
+            summaryReason: `SSR __NEXT_DATA__ state (isOpen=${isOpen})`
+          };
+        }
+      }
+    } catch {
+      // Ignore malformed __NEXT_DATA__
+    }
+  }
+
+  return defaultRes;
+}
+
+/**
+ * Depth-aware removal of balanced HTML tag blocks (e.g. nested `<nav>...</nav>`, `<footer>...</footer>`, `<aside>...</aside>`).
+ */
+function stripBalancedTagBlocks(html: string, tagName: string): string {
+  const openRe = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+  const closeRe = new RegExp(`<\\/${tagName}\\s*>`, 'gi');
+  let result = html;
+  let safetyCounter = 0;
+
+  while (safetyCounter++ < 25) {
+    openRe.lastIndex = 0;
+    const firstOpen = openRe.exec(result);
+    if (!firstOpen) break;
+
+    let depth = 1;
+    let searchPos = openRe.lastIndex;
+    let cutEnd = -1;
+
+    while (depth > 0 && searchPos < result.length) {
+      openRe.lastIndex = searchPos;
+      closeRe.lastIndex = searchPos;
+      const nextOpen = openRe.exec(result);
+      const nextClose = closeRe.exec(result);
+
+      if (!nextClose) {
+        cutEnd = result.length;
+        break;
+      }
+      if (nextOpen && nextOpen.index < nextClose.index) {
+        depth++;
+        searchPos = openRe.lastIndex;
+      } else {
+        depth--;
+        searchPos = closeRe.lastIndex;
+        if (depth === 0) {
+          cutEnd = searchPos;
+        }
+      }
+    }
+
+    if (cutEnd !== -1) {
+      result = result.slice(0, firstOpen.index) + ' ' + result.slice(cutEnd);
+    } else {
+      break;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Strips site-wide boilerplate (<nav>, <header>, <footer>, <aside>, <script>, <style>, [hidden], [inert])
+ * using depth-aware balanced tag removal so unrelated navbar/footer CTA buttons never cause false-positive triggers.
  */
 export function extractSemanticMainHtml(html: string): string {
-  const withoutScripts = html
+  let cleaned = html
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
     .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
 
-  // Remove semantic boilerplate regions & hidden prompt-injection containers
-  const withoutBoilerplate = withoutScripts
-    .replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ')
-    .replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ')
-    .replace(/<aside\b[\s\S]*?<\/aside>/gi, ' ')
-    .replace(/<[^>]+style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/gi, ' ')
-    .replace(/<header\b[^>]*class=["'][^"']*(?:site-header|global-header|navbar|top-nav)[^"']*["'][^>]*>[\s\S]*?<\/header>/gi, ' ');
+  for (const tag of ['nav', 'footer', 'aside']) {
+    cleaned = stripBalancedTagBlocks(cleaned, tag);
+  }
 
-  return withoutBoilerplate;
+  cleaned = cleaned
+    .replace(
+      /<[^>]+(?:style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["']|\bhidden\b|\binert\b|aria-hidden=["']true["'])[^>]*>[\s\S]*?<\/[a-z0-9]+>/gi,
+      ' '
+    )
+    .replace(
+      /<header\b[^>]*class=["'][^"']*(?:site-header|global-header|navbar|top-nav)[^"']*["'][^>]*>[\s\S]*?<\/header>/gi,
+      ' '
+    );
+
+  return cleaned;
 }
 
 export function stripHtmlToText(html: string): string {
   const semanticHtml = extractSemanticMainHtml(html);
-  return semanticHtml
+  // Also preserve entity title text from JSON-LD or __NEXT_DATA__ when the page is an SSR shell
+  let structuredText = '';
+  const ldMatches = html.match(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  if (ldMatches) {
+    structuredText += ' ' + ldMatches.join(' ').replace(/<[^>]+>/g, ' ');
+  }
+  const nextMatch = html.match(/<script\b[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (nextMatch) {
+    structuredText += ' ' + nextMatch[1];
+  }
+
+  const combined = `${semanticHtml} ${structuredText}`;
+  return combined
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/\b(?:ignore\s+(?:all\s+)?previous\s+instructions|disregard\s+all\s+prior\s+instructions|system\s+prompt\s*:)/gi, '[FILTERED_PROMPT_INJECTION]')
+    .replace(
+      /\b(?:ignore\s+(?:all\s+)?previous\s+instructions|disregard\s+all\s+prior\s+instructions|system\s+prompt\s*:)/gi,
+      '[FILTERED_PROMPT_INJECTION]'
+    )
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -205,7 +448,7 @@ export function extractApplyUrl(html: string, baseUrl: string): string | null {
 
 export function extractDeadlineFromText(text: string): string | null {
   const patterns = [
-    /(?:deadline|apply before|register before|closes on|due by|submission deadline|ends on)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
+    /(?:deadline|apply before|register before|closes on|due by|submission deadline|ends on)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4}(?:\s+(?:at\s+)?\d{1,2}:\d{2}\s*AoE)?)/i,
     /(?:deadline|apply before|register before|closes on|due by)\s*[:\-–]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})/i,
     /(?:before|by)\s+([A-Z][a-z]+\s+\d{1,2},?\s+202[6-9])/i
   ];
@@ -242,7 +485,8 @@ export interface AdversarialSignalAnalysis {
 
 /**
  * Evaluates webpage HTML against adversarial real-world edge cases:
- * - Strips <nav>/<footer>/<aside> boilerplate
+ * - Extracts `<script type="application/ld+json">` and SSR `__NEXT_DATA__` hydration state
+ * - Strips nested `<nav>`/`<footer>`/`<aside>` boilerplate via depth-aware scanner
  * - Evaluates sentence-level negation & future modals ("will be able to apply online once it opens")
  * - Verifies cohort year alignment (e.g. rejects "2025 applications are open" when watching 2027)
  * - Verifies active, non-disabled CTA link
@@ -253,19 +497,35 @@ export function evaluateWebpageSignals(
   baseUrl: string
 ): AdversarialSignalAnalysis {
   const semanticHtml = extractSemanticMainHtml(rawHtml);
-  const cleanText = stripHtmlToText(rawHtml);
-  const sentences = cleanText
-    .split(/(?<=[.!?•])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const visibleCleanText = semanticHtml
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   // Determine target cohort year if specified in watch title (e.g. "2027")
   const titleYearMatch = watch.title.match(/\b(202[6-9]|203\d)\b/);
   const targetCohortYear = titleYearMatch ? Number(titleYearMatch[1]) : null;
 
+  // Check structured JSON-LD & __NEXT_DATA__ state first
+  const structured = extractStructuredPortalState(rawHtml, baseUrl, targetCohortYear);
+
+  const sentences = visibleCleanText
+    .split(/(?<=[.!?•])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   const matchedOpen: string[] = [];
   const matchedClosed: string[] = [];
   const rejectedReasons: string[] = [];
+
+  if (structured.hasStructuredSignal && structured.summaryReason) {
+    if (structured.isOpen) {
+      matchedOpen.push(structured.summaryReason);
+    } else {
+      matchedClosed.push(structured.summaryReason);
+    }
+  }
 
   for (const sentence of sentences) {
     const lowerSentence = sentence.toLowerCase();
@@ -311,9 +571,11 @@ export function evaluateWebpageSignals(
 
   const explicitOpenAttr = /data-portal-status=["']open["']/i.test(semanticHtml);
   const explicitClosedAttr = /data-portal-status=["']closed["']/i.test(semanticHtml);
-  const candidateApplyUrl = extractApplyUrl(rawHtml, baseUrl);
-  const detectedDeadline = extractDeadlineFromText(cleanText);
-  const detectedOpenDate = extractOpeningWindowFromText(cleanText);
+  const candidateApplyUrl = structured.detectedApplyUrl || extractApplyUrl(rawHtml, baseUrl);
+  const detectedDeadline =
+    structured.detectedDeadline || extractDeadlineFromText(visibleCleanText);
+  const detectedOpenDate =
+    structured.detectedOpenDate || extractOpeningWindowFromText(visibleCleanText);
 
   let isOpen = false;
   let outcome: 1 | 2 | null = null;
@@ -327,6 +589,10 @@ export function evaluateWebpageSignals(
     isOpen = true;
     outcome = 1;
     confidence = 0.98;
+  } else if (structured.hasStructuredSignal && structured.isOpen !== null) {
+    isOpen = structured.isOpen;
+    outcome = isOpen ? 1 : null;
+    confidence = structured.confidence;
   } else if (matchedOpen.length > 0 && matchedClosed.length === 0) {
     // Require either a valid non-disabled Apply CTA link OR high-confidence open phrasing
     if (candidateApplyUrl || matchedOpen.length >= 2) {
@@ -342,7 +608,7 @@ export function evaluateWebpageSignals(
   } else if (
     matchedOpen.length > matchedClosed.length &&
     candidateApplyUrl &&
-    !NEGATION_OR_FUTURE_MODALS.test(cleanText)
+    !NEGATION_OR_FUTURE_MODALS.test(visibleCleanText)
   ) {
     isOpen = true;
     outcome = 1;

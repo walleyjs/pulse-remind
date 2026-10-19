@@ -1,5 +1,6 @@
 import type { WatchRecord } from '../../watch/model.ts';
 import type { EvaluationResult } from '../../resolution/types.ts';
+import { buildWatchIcsFeed } from '../../../pkg/calendar/ics.ts';
 
 const emailHtmlStore = new Map<string, string>();
 
@@ -7,6 +8,7 @@ export interface EmailSendResult {
   deliveryStatus: 'delivered' | 'simulated' | 'failed';
   provider: 'resend_api' | 'in_app_preview';
   externalId?: string;
+  retryAfterSeconds?: number;
   error?: string;
 }
 
@@ -20,7 +22,7 @@ export class EmailProvider {
   }
 
   /**
-   * Sends a real transactional HTML email via Resend (`RESEND_API_KEY`) if configured,
+   * Sends a real transactional HTML email via Resend (`RESEND_API_KEY`) with RFC 5545 `.ics` attachment if configured,
    * or falls back to storing the rendered HTML preview in the dashboard.
    */
   async sendEmail(params: {
@@ -29,6 +31,8 @@ export class EmailProvider {
     html: string;
     text: string;
     fromEmail?: string;
+    icsAttachmentContent?: string;
+    icsFilename?: string;
   }): Promise<EmailSendResult> {
     const resendApiKey = process.env.RESEND_API_KEY || '';
     const fromAddress =
@@ -44,26 +48,40 @@ export class EmailProvider {
     }
 
     try {
+      const payload: Record<string, unknown> = {
+        from: fromAddress,
+        to: [params.to],
+        subject: params.subject,
+        html: params.html,
+        text: params.text
+      };
+
+      if (params.icsAttachmentContent) {
+        payload.attachments = [
+          {
+            filename: params.icsFilename || 'invite.ics',
+            content: Buffer.from(params.icsAttachmentContent, 'utf-8').toString('base64')
+          }
+        ];
+      }
+
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${resendApiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          from: fromAddress,
-          to: [params.to],
-          subject: params.subject,
-          html: params.html,
-          text: params.text
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!res.ok) {
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) || 60 : undefined;
         const errBody = await res.text().catch(() => res.statusText);
         return {
           deliveryStatus: 'failed',
           provider: 'resend_api',
+          retryAfterSeconds,
           error: `Resend HTTP ${res.status}: ${errBody.slice(0, 180)}`
         };
       }
@@ -81,6 +99,10 @@ export class EmailProvider {
         error: (err as Error).message
       };
     }
+  }
+
+  buildWatchIcsAttachment(watch: WatchRecord, baseUrl = 'https://pulse-remind.onrender.com'): string {
+    return buildWatchIcsFeed([watch], baseUrl);
   }
 
   buildOpportunityOpenHtml(watch: WatchRecord, evaluation: EvaluationResult): string {

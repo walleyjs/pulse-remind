@@ -8,7 +8,14 @@ export type WatchStatus =
   | 'paused';
 
 export type TriggerType = 'web_monitor' | 'scheduled_date' | 'hybrid';
-export type NotificationChannelType = 'in_app' | 'email' | 'slack' | 'discord' | 'telegram' | 'whatsapp';
+export type NotificationChannelType =
+  | 'in_app'
+  | 'email'
+  | 'web_push'
+  | 'slack'
+  | 'discord'
+  | 'telegram'
+  | 'whatsapp';
 
 /**
  * Inspired by Octopus API `ResolutionConfig` (src/internal/market/market.rs)

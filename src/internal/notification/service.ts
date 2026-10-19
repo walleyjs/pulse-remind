@@ -87,8 +87,9 @@ export class NotificationService {
   async dispatchOpenNotifications(
     watch: WatchRecord,
     evaluation: EvaluationResult,
-    options: { allowDuplicateTest?: boolean } = {}
+    options: { allowDuplicateTest?: boolean; nowUnix?: number } = {}
   ): Promise<NotificationRecord[]> {
+    const nowUnix = options.nowUnix ?? Math.floor(Date.now() / 1000);
     const configs = this.repo.getChannelConfigs();
     const configMap = new Map(configs.map((c) => [c.channel, c]));
     const sentNotifications: NotificationRecord[] = [];
@@ -114,6 +115,21 @@ export class NotificationService {
         ? undefined
         : this.buildIdempotencyKey(watch, channel);
 
+      // Check existing outbox state before making external network calls
+      if (idempotencyKey) {
+        const existing = this.repo.findByIdempotencyKey(idempotencyKey);
+        if (existing) {
+          if (existing.delivery_status !== 'failed') {
+            // Already delivered or simulated for this watch + channel + cycle
+            continue;
+          }
+          if (existing.next_retry_at && existing.next_retry_at > nowUnix) {
+            // Respect Retry-After / exponential backoff window
+            continue;
+          }
+        }
+      }
+
       if (channel === 'in_app') {
         const { record, created } = this.repo.insert({
           watch_id: watch.id,
@@ -137,13 +153,21 @@ export class NotificationService {
           channelCfg?.config?.default_recipient ||
           'student@university.edu';
         const html = this.email.buildOpportunityOpenHtml(watch, evaluation);
+        const icsAttachment = this.email.buildWatchIcsAttachment(watch);
         const sendResult = await this.email.sendEmail({
           to: recipient,
           subject,
           html,
           text: plainMessage,
-          fromEmail: channelCfg?.config?.from_email
+          fromEmail: channelCfg?.config?.from_email,
+          icsAttachmentContent: icsAttachment,
+          icsFilename: `${watch.id}.ics`
         });
+
+        const nextRetryAt =
+          sendResult.deliveryStatus === 'failed'
+            ? nowUnix + (sendResult.retryAfterSeconds ?? 60)
+            : null;
 
         const { record: notif, created } = this.repo.insert({
           watch_id: watch.id,
@@ -154,7 +178,9 @@ export class NotificationService {
           message: plainMessage,
           delivery_status: sendResult.deliveryStatus === 'failed' ? 'failed' : 'delivered',
           preview_url: null,
-          idempotency_key: idempotencyKey
+          idempotency_key: idempotencyKey,
+          next_retry_at: nextRetryAt,
+          last_error: sendResult.error || null
         });
 
         if (created) {
@@ -165,12 +191,15 @@ export class NotificationService {
         continue;
       }
 
-      const { deliveryStatus, recipientLabel } = await this.webhook.send(
+      const { deliveryStatus, recipientLabel, retryAfterSeconds, error } = await this.webhook.send(
         channel,
         channelCfg,
         subject,
         plainMessage
       );
+
+      const nextRetryAt =
+        deliveryStatus === 'failed' ? nowUnix + (retryAfterSeconds ?? 60) : null;
 
       const { record, created } = this.repo.insert({
         watch_id: watch.id,
@@ -181,7 +210,9 @@ export class NotificationService {
         message: plainMessage,
         delivery_status: deliveryStatus,
         preview_url: evaluation.detectedApplyUrl || watch.target_url,
-        idempotency_key: idempotencyKey
+        idempotency_key: idempotencyKey,
+        next_retry_at: nextRetryAt,
+        last_error: error || null
       });
       if (created) sentNotifications.push(record);
     }

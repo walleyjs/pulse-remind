@@ -118,10 +118,13 @@ export function runSchemaMigrations(): void {
   ensureColumnExists('check_logs', 'next_poll_after', 'INTEGER');
 
   ensureColumnExists('notifications', 'idempotency_key', 'TEXT');
+  ensureColumnExists('notifications', 'attempt_count', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumnExists('notifications', 'next_retry_at', 'INTEGER');
+  ensureColumnExists('notifications', 'last_error', 'TEXT');
+
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency
     ON notifications(idempotency_key)
     WHERE idempotency_key IS NOT NULL;
   `);
 }
-

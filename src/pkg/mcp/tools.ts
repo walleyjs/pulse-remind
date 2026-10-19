@@ -84,7 +84,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         timeframe_text: {
           type: 'string',
           description:
-            'When the event or opening is expected (e.g., "end of this month", "next Friday", "early next year", "Spring 2027")'
+            'When the event or opening is expected (e.g., "end of this month", "next Friday", "early next year", "Spring 2027", "November 15, 2026 23:59 AoE")'
         },
         condition_text: {
           type: 'string',
@@ -100,7 +100,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'array',
           items: {
             type: 'string',
-            enum: ['in_app', 'email', 'slack', 'discord', 'telegram', 'whatsapp']
+            enum: ['in_app', 'email', 'web_push', 'slack', 'discord', 'telegram', 'whatsapp']
           },
           description: 'Notification channels to alert when triggered'
         }
@@ -142,7 +142,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'array',
           items: {
             type: 'string',
-            enum: ['in_app', 'email', 'slack', 'discord', 'telegram', 'whatsapp']
+            enum: ['in_app', 'email', 'web_push', 'slack', 'discord', 'telegram', 'whatsapp']
           },
           description: 'Channels to enable for the user'
         }

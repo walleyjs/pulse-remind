@@ -13,6 +13,9 @@ export interface NotificationRecord {
   delivery_status: 'delivered' | 'simulated' | 'failed';
   preview_url: string | null;
   is_read: boolean;
+  attempt_count?: number;
+  next_retry_at?: number | null;
+  last_error?: string | null;
   created_at: string;
 }
 
