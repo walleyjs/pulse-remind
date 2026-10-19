@@ -150,7 +150,25 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      // 3. MCP over HTTP JSON-RPC endpoint (/mcp) & Tool listing (/api/mcp/tools)
+      // 3. OpenAI ChatGPT Plugin Manifests & Streamable HTTP MCP (/mcp)
+      if ((pathname === '/plugin.json' || pathname === '/.well-known/mcp.json') && req.method === 'GET') {
+        sendJson(res, 200, {
+          name: 'pulseremind',
+          version: '1.0.0',
+          description:
+            'Captures future-dated scholarships, fellowships, and admissions mentioned in AI chats, monitors their web pages, and notifies users when applications open.',
+          skills: './skills',
+          mcp: {
+            connection: {
+              type: 'http',
+              url: `${baseUrl}/mcp`
+            }
+          },
+          openapi: `${baseUrl}/api/openapi.json`
+        });
+        return;
+      }
+
       if (pathname === '/api/mcp/tools' && req.method === 'GET') {
         sendJson(res, 200, {
           server: 'pulseremind-mcp-server',
@@ -158,10 +176,40 @@ export function createAppServer(): http.Server {
           transport_options: {
             stdio_command: 'npm run mcp',
             http_jsonrpc: `${baseUrl}/mcp`,
+            chatgpt_plugin_manifest: `${baseUrl}/plugin.json`,
             openapi_spec: `${baseUrl}/api/openapi.json`
           },
           tools: MCP_TOOLS
         });
+        return;
+      }
+
+      if (pathname === '/mcp' && req.method === 'GET') {
+        const accept = req.headers.accept || '';
+        if (accept.includes('text/event-stream')) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.write(`event: endpoint\ndata: ${baseUrl}/mcp\n\n`);
+          req.on('close', () => res.end());
+          return;
+        }
+        sendJson(res, 200, {
+          name: 'pulseremind-mcp-server',
+          version: '1.0.0',
+          protocolVersion: '2025-03-26',
+          endpoint: `${baseUrl}/mcp`,
+          tools_count: MCP_TOOLS.length
+        });
+        return;
+      }
+
+      if (pathname === '/mcp' && req.method === 'DELETE') {
+        res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+        res.end();
         return;
       }
 
@@ -172,19 +220,38 @@ export function createAppServer(): http.Server {
         const params = (body.params as Record<string, unknown>) || {};
 
         if (method === 'initialize') {
+          const requestedProtocol =
+            typeof params.protocolVersion === 'string' ? params.protocolVersion : '2024-11-05';
           sendJson(res, 200, {
             jsonrpc: '2.0',
             id,
             result: {
-              protocolVersion: '2024-11-05',
-              capabilities: { tools: {} },
+              protocolVersion: requestedProtocol,
+              capabilities: { tools: { listChanged: false } },
               serverInfo: { name: 'pulseremind-mcp-server', version: '1.0.0' }
             }
           });
           return;
         }
+        if (method.startsWith('notifications/')) {
+          res.writeHead(202, { 'Access-Control-Allow-Origin': '*' });
+          res.end();
+          return;
+        }
+        if (method === 'ping') {
+          sendJson(res, 200, { jsonrpc: '2.0', id, result: {} });
+          return;
+        }
         if (method === 'tools/list') {
           sendJson(res, 200, { jsonrpc: '2.0', id, result: { tools: MCP_TOOLS } });
+          return;
+        }
+        if (method === 'resources/list') {
+          sendJson(res, 200, { jsonrpc: '2.0', id, result: { resources: [] } });
+          return;
+        }
+        if (method === 'prompts/list') {
+          sendJson(res, 200, { jsonrpc: '2.0', id, result: { prompts: [] } });
           return;
         }
         if (method === 'tools/call') {
