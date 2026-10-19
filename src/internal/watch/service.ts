@@ -55,7 +55,11 @@ export class WatchService {
 
   claimSubscriberToken(
     token: string,
-    params: { recipient_email?: string; notify_channels?: WatchRecord['notify_channels'] }
+    params: {
+      recipient_email?: string;
+      notify_channels?: WatchRecord['notify_channels'];
+      ntfy_topic?: string;
+    }
   ): WatchRecord | null {
     return this.repo.claimSubscriberToken(token, params);
   }

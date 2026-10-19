@@ -191,7 +191,7 @@ export class WatchRepository {
       JSON.stringify(resConfig),
       status,
       JSON.stringify(input.notify_channels || ['in_app', 'email']),
-      input.recipient_email || 'student@university.edu',
+      input.recipient_email || process.env.DEFAULT_RECIPIENT_EMAIL || 'student@university.edu',
       initialSummary,
       now
     );
@@ -241,7 +241,11 @@ export class WatchRepository {
 
   claimSubscriberToken(
     token: string,
-    params: { recipient_email?: string; notify_channels?: NotificationChannelType[] }
+    params: {
+      recipient_email?: string;
+      notify_channels?: NotificationChannelType[];
+      ntfy_topic?: string;
+    }
   ): WatchRecord | null {
     const watch = this.findBySubscriberToken(token);
     if (!watch) return null;
@@ -255,6 +259,7 @@ export class WatchRepository {
       ...watch.resolution_config,
       provider_metadata: {
         ...watch.resolution_config.provider_metadata,
+        ...(params.ntfy_topic ? { ntfy_topic: params.ntfy_topic.trim() } : {}),
         claimed_at: new Date().toISOString()
       }
     };

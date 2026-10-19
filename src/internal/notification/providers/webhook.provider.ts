@@ -77,6 +77,47 @@ export class MessagingWebhookProvider {
 
     return { deliveryStatus, recipientLabel };
   }
+
+  /**
+   * Sends a zero-signup native Mobile (iOS/Android) & Desktop Push Notification via ntfy.sh
+   * when `NTFY_TOPIC` (or per-watch `ntfy_topic`) is configured.
+   */
+  async sendNtfyPush(params: {
+    topic: string;
+    title: string;
+    message: string;
+    clickUrl?: string | null;
+  }): Promise<WebhookDispatchResult> {
+    const cleanTopic = params.topic.trim().replace(/^https?:\/\/ntfy\.sh\//i, '');
+    if (!cleanTopic) {
+      return { deliveryStatus: 'simulated', recipientLabel: 'ntfy.sh (not configured)' };
+    }
+    try {
+      const headers: Record<string, string> = {
+        Title: params.title.replace(/[^\x20-\x7E]/g, '').trim() || 'PulseRemind Alert',
+        Priority: 'high',
+        Tags: 'bell,calendar'
+      };
+      if (params.clickUrl && params.clickUrl.startsWith('http')) {
+        headers.Click = params.clickUrl;
+      }
+      const res = await fetch(`https://ntfy.sh/${encodeURIComponent(cleanTopic)}`, {
+        method: 'POST',
+        headers,
+        body: params.message
+      });
+      return {
+        deliveryStatus: res.ok ? 'delivered' : 'failed',
+        recipientLabel: `ntfy.sh/${cleanTopic}`
+      };
+    } catch {
+      return {
+        deliveryStatus: 'failed',
+        recipientLabel: `ntfy.sh/${cleanTopic}`
+      };
+    }
+  }
 }
 
 export const messagingWebhookProvider = new MessagingWebhookProvider();
+

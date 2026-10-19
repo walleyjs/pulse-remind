@@ -640,7 +640,8 @@ export function createAppServer(): http.Server {
           recipient_email: body.recipient_email ? String(body.recipient_email) : undefined,
           notify_channels: Array.isArray(body.notify_channels)
             ? (body.notify_channels as NotificationChannelType[])
-            : undefined
+            : undefined,
+          ntfy_topic: body.ntfy_topic ? String(body.ntfy_topic) : undefined
         });
         if (!claimed) {
           sendJson(res, 404, { error: 'Claim token not found' });
@@ -653,12 +654,100 @@ export function createAppServer(): http.Server {
       const webClaimMatch = pathname.match(/^\/claim\/(prm_[a-z0-9]+)$/i);
       if (webClaimMatch && req.method === 'GET') {
         const token = webClaimMatch[1];
+        const watch = watchService
+          .listWatches()
+          .find((w) => w.resolution_config?.provider_metadata?.subscriber_token === token);
+        const watchTitle = watch ? watch.title : `Reminder (${token})`;
+        const currentEmail =
+          watch && watch.recipient_email && watch.recipient_email !== 'student@university.edu'
+            ? watch.recipient_email
+            : '';
+        const currentNtfy = watch?.resolution_config?.provider_metadata?.ntfy_topic || `pulseremind-${token.slice(4, 10)}`;
+
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Claim PulseRemind Alert (${token})</title></head>
-          <body style="font-family:sans-serif;max-width:560px;margin:48px auto;padding:24px;background:#090d16;color:#f1f5f9;">
-            <h2>🔒 Bind Your Alert Destination (${token})</h2>
-            <p style="color:#94a3b8;">Your AI chat never sees your contact details. Bind your preferred delivery channel directly to this anonymous watch token.</p>
-          </body></html>`);
+        res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claim Alert — ${watchTitle}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 40px auto; padding: 20px; background: #090d16; color: #f8fafc; line-height: 1.5; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 28px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); }
+    .badge { display: inline-block; background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+    h2 { margin: 0 0 6px; font-size: 20px; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #cbd5e1; margin-top: 16px; margin-bottom: 6px; }
+    input[type="email"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 11px 14px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; font-size: 14px; }
+    .channels { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+    .chip { display: flex; align-items: center; gap: 6px; background: #0f172a; border: 1px solid #334155; padding: 6px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+    .btn { width: 100%; margin-top: 22px; padding: 12px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg, #10b981, #059669); color: #052e16; font-weight: 700; font-size: 15px; cursor: pointer; }
+    .btn-secondary { width: 100%; margin-top: 10px; padding: 10px 14px; border: 1px solid #334155; border-radius: 10px; background: #1e293b; color: #e2e8f0; font-weight: 600; font-size: 13px; cursor: pointer; }
+    .status { margin-top: 14px; font-size: 13px; color: #34d399; display: none; }
+    .hint { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">🔒 Privacy-First Alert Binding • ${token}</span>
+    <h2>${watchTitle}</h2>
+    <p style="color:#94a3b8;font-size:13px;margin-top:4px;">Your AI chat never needs your personal email or phone. Bind your notification channels directly here.</p>
+
+    <label for="email">📧 Email Address for Alert Delivery</label>
+    <input id="email" type="email" placeholder="you@example.com" value="${currentEmail}" />
+
+    <label for="ntfy">📲 Mobile & Desktop Push Topic (via free <a href="https://ntfy.sh" target="_blank" style="color:#38bdf8;">ntfy.sh</a> app)</label>
+    <input id="ntfy" type="text" placeholder="pulseremind-your-topic" value="${currentNtfy}" />
+    <div class="hint">Subscribe to <strong>https://ntfy.sh/${currentNtfy}</strong> in the iOS/Android ntfy app or browser for instant push notifications.</div>
+
+    <label>🔔 Active Channels</label>
+    <div class="channels">
+      <label class="chip"><input type="checkbox" class="ch" value="in_app" checked /> Web Dashboard</label>
+      <label class="chip"><input type="checkbox" class="ch" value="email" checked /> Email</label>
+      <label class="chip"><input type="checkbox" class="ch" value="telegram" /> Telegram</label>
+      <label class="chip"><input type="checkbox" class="ch" value="slack" /> Slack</label>
+      <label class="chip"><input type="checkbox" class="ch" value="discord" /> Discord</label>
+    </div>
+
+    <button class="btn" id="saveBtn">Save Email & Activate Push Alerts</button>
+    <button class="btn-secondary" id="browserPushBtn" type="button">🌐 Enable Browser Push Notifications on This Device</button>
+    <div class="status" id="statusMsg"></div>
+  </div>
+  <script>
+    document.getElementById('browserPushBtn').addEventListener('click', async () => {
+      if (!('Notification' in window)) {
+        alert('Browser notifications are not supported in this browser.');
+        return;
+      }
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        new Notification('PulseRemind Push Active!', {
+          body: 'You will receive desktop/mobile browser push alerts when ' + ${JSON.stringify(watchTitle)} + ' opens.',
+          icon: '/pulseremind-icon-256.png'
+        });
+      }
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      const email = document.getElementById('email').value.trim();
+      const ntfy = document.getElementById('ntfy').value.trim();
+      const channels = Array.from(document.querySelectorAll('.ch:checked')).map(el => el.value);
+      const res = await fetch('/api/claim/${token}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_email: email || undefined, notify_channels: channels, ntfy_topic: ntfy || undefined })
+      });
+      const msg = document.getElementById('statusMsg');
+      msg.style.display = 'block';
+      if (res.ok) {
+        msg.textContent = '✅ Saved! Alerts will be delivered to ' + (email || 'your selected channels') + (ntfy ? ' + push topic ntfy.sh/' + ntfy : '') + '.';
+      } else {
+        msg.style.color = '#f87171';
+        msg.textContent = '⚠️ Could not find watch token — it may belong to a previous session.';
+      }
+    });
+  </script>
+</body>
+</html>`);
         return;
       }
 

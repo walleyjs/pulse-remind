@@ -124,7 +124,19 @@ export class NotificationService {
 
       if (channel === 'email') {
         const recipient =
-          watch.recipient_email || channelCfg?.config?.default_recipient || 'student@university.edu';
+          watch.recipient_email ||
+          process.env.DEFAULT_RECIPIENT_EMAIL ||
+          channelCfg?.config?.default_recipient ||
+          'student@university.edu';
+        const html = this.email.buildOpportunityOpenHtml(watch, evaluation);
+        const sendResult = await this.email.sendEmail({
+          to: recipient,
+          subject,
+          html,
+          text: plainMessage,
+          fromEmail: channelCfg?.config?.from_email
+        });
+
         const { record: notif, created } = this.repo.insert({
           watch_id: watch.id,
           watch_title: watch.title,
@@ -132,13 +144,12 @@ export class NotificationService {
           recipient,
           subject,
           message: plainMessage,
-          delivery_status: 'delivered',
+          delivery_status: sendResult.deliveryStatus === 'failed' ? 'failed' : 'delivered',
           preview_url: null,
           idempotency_key: idempotencyKey
         });
 
         if (created) {
-          const html = this.email.buildOpportunityOpenHtml(watch, evaluation);
           this.email.storeRenderedHtml(notif.id, html);
           notif.preview_url = `/api/notifications/${notif.id}/email-preview`;
           sentNotifications.push(notif);
@@ -165,6 +176,18 @@ export class NotificationService {
         idempotency_key: idempotencyKey
       });
       if (created) sentNotifications.push(record);
+    }
+
+    // Optional zero-signup Mobile/Desktop Push via ntfy.sh (per-watch claim or global NTFY_TOPIC env var)
+    const ntfyTopic =
+      watch.resolution_config?.provider_metadata?.ntfy_topic || process.env.NTFY_TOPIC || '';
+    if (ntfyTopic) {
+      await this.webhook.sendNtfyPush({
+        topic: ntfyTopic,
+        title: subject,
+        message: plainMessage,
+        clickUrl: evaluation.detectedApplyUrl || watch.target_url
+      });
     }
 
     return sentNotifications;

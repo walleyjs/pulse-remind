@@ -3,6 +3,13 @@ import type { EvaluationResult } from '../../resolution/types.ts';
 
 const emailHtmlStore = new Map<string, string>();
 
+export interface EmailSendResult {
+  deliveryStatus: 'delivered' | 'simulated' | 'failed';
+  provider: 'resend_api' | 'in_app_preview';
+  externalId?: string;
+  error?: string;
+}
+
 export class EmailProvider {
   storeRenderedHtml(notificationId: string, html: string): void {
     emailHtmlStore.set(notificationId, html);
@@ -12,6 +19,70 @@ export class EmailProvider {
     return emailHtmlStore.get(notificationId) || null;
   }
 
+  /**
+   * Sends a real transactional HTML email via Resend (`RESEND_API_KEY`) if configured,
+   * or falls back to storing the rendered HTML preview in the dashboard.
+   */
+  async sendEmail(params: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+    fromEmail?: string;
+  }): Promise<EmailSendResult> {
+    const resendApiKey = process.env.RESEND_API_KEY || '';
+    const fromAddress =
+      params.fromEmail ||
+      process.env.RESEND_FROM_EMAIL ||
+      'PulseRemind Alerts <onboarding@resend.dev>';
+
+    if (!resendApiKey || params.to === 'student@university.edu') {
+      return {
+        deliveryStatus: 'simulated',
+        provider: 'in_app_preview'
+      };
+    }
+
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fromAddress,
+          to: [params.to],
+          subject: params.subject,
+          html: params.html,
+          text: params.text
+        })
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => res.statusText);
+        return {
+          deliveryStatus: 'failed',
+          provider: 'resend_api',
+          error: `Resend HTTP ${res.status}: ${errBody.slice(0, 180)}`
+        };
+      }
+
+      const data = (await res.json()) as { id?: string };
+      return {
+        deliveryStatus: 'delivered',
+        provider: 'resend_api',
+        externalId: data.id
+      };
+    } catch (err) {
+      return {
+        deliveryStatus: 'failed',
+        provider: 'resend_api',
+        error: (err as Error).message
+      };
+    }
+  }
+
   buildOpportunityOpenHtml(watch: WatchRecord, evaluation: EvaluationResult): string {
     const applyUrl = evaluation.detectedApplyUrl || watch.target_url || '#';
     const deadline = evaluation.detectedDeadline || 'See official portal';
@@ -19,7 +90,7 @@ export class EmailProvider {
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Opportunity Open: ${watch.title}</title>
+  <title>Reminder Triggered: ${watch.title}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 32px; margin: 0; }
     .card { max-width: 600px; margin: 0 auto; background: #1e293b; border: 1px solid #334155; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
@@ -37,32 +108,32 @@ export class EmailProvider {
 <body>
   <div class="card">
     <div class="banner">
-      <span class="badge">Applications Now Open</span>
+      <span class="badge">PulseRemind Alert • Live Now</span>
       <h1 style="margin: 10px 0 4px; font-size: 22px;">${watch.title}</h1>
       <p style="margin: 0; opacity: 0.9; font-size: 14px;">Detected by PulseRemind Resolution Engine</p>
     </div>
     <div class="content">
-      <p>Good news! During your earlier conversation in <strong>${watch.source_chat_client}</strong>, you planned to apply for <strong>${watch.title}</strong> once it opened (${watch.window_label || 'scheduled window'}).</p>
+      <p>Good news! During your earlier conversation in <strong>${watch.source_chat_client}</strong>, you set a reminder for <strong>${watch.title}</strong> (${watch.window_label || 'scheduled window'}).</p>
       <div class="context-box">
-        <strong>Your AI Chat Context:</strong><br/>
+        <strong>Your Action Checklist:</strong><br/>
         ${watch.chat_context}
       </div>
-      <p><strong>What our Resolution Engine detected on the page:</strong><br/>
+      <p><strong>What our Resolution Engine detected:</strong><br/>
       <em>"${evaluation.extractedSnippet || evaluation.summary}"</em></p>
       <div class="meta-grid">
         <div>
-          <div class="meta-label">Application Status</div>
-          <div class="meta-val" style="color: #34d399;">OPEN (${Math.round(evaluation.confidence * 100)}% Match)</div>
+          <div class="meta-label">Status</div>
+          <div class="meta-val" style="color: #34d399;">OPEN / LIVE (${Math.round(evaluation.confidence * 100)}% Match)</div>
         </div>
         <div>
           <div class="meta-label">Detected Deadline</div>
           <div class="meta-val">${deadline}</div>
         </div>
       </div>
-      <a class="btn" href="${applyUrl}" target="_blank" rel="noopener">Open Application Portal &rarr;</a>
+      <a class="btn" href="${applyUrl}" target="_blank" rel="noopener">Open Official Page &rarr;</a>
     </div>
     <div class="footer">
-      Watch ID: ${watch.id} • Monitored URL: ${watch.target_url || 'Scheduled Reminder'}
+      Watch ID: ${watch.id} • Monitored URL: ${watch.target_url || 'Scheduled Date Reminder'}
     </div>
   </div>
 </body>
