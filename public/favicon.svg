@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none">
+  <defs>
+    <!-- Deep obsidian squircle background -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="55%" stop-color="#090D16" />
+      <stop offset="100%" stop-color="#06121E" />
+    </linearGradient>
+
+    <!-- Electric Indigo to Emerald "Open" Pulse Gradient -->
+    <linearGradient id="pulseGrad" x1="18" y1="78" x2="110" y2="34" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+
+    <!-- Subtle border glow -->
+    <linearGradient id="borderGrad" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" stop-opacity="0.6" />
+      <stop offset="50%" stop-color="#38BDF8" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0.6" />
+    </linearGradient>
+
+    <!-- Emerald Beacon Radial Glow -->
+    <radialGradient id="beaconGlow" cx="92" cy="36" r="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded App Icon Squircle -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="2.5" />
+
+  <!-- Subtle Radar / Sonar Concentric Rings (Web Monitoring Metaphor) -->
+  <circle cx="64" cy="68" r="40" stroke="#6366F1" stroke-opacity="0.14" stroke-width="1.5" stroke-dasharray="4 4" />
+  <circle cx="64" cy="68" r="26" stroke="#38BDF8" stroke-opacity="0.18" stroke-width="1.5" />
+
+  <!-- Notification Bell Silhouette Arc (Upper Dome) -->
+  <path
+    d="M40 72V56C40 42.745 50.745 32 64 32C70.2 32 75.85 34.35 80.1 38.2"
+    stroke="#6366F1"
+    stroke-opacity="0.45"
+    stroke-width="3.5"
+    stroke-linecap="round"
+  />
+
+  <!-- Primary Pulse Waveform Morphing into Rising Signal -->
+  <path
+    d="M22 76H38L47 60L57 90L70 42L81 66L92 36"
+    stroke="url(#pulseGrad)"
+    stroke-width="6.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Bell Clapper / Temporal Anchor Dot at Bottom -->
+  <path d="M57 100C59.2 103 68.8 103 71 100" stroke="#94A3B8" stroke-opacity="0.6" stroke-width="4" stroke-linecap="round" />
+
+  <!-- Glowing "Opportunity Open" Emerald Beacon at Pulse Apex -->
+  <circle cx="92" cy="36" r="20" fill="url(#beaconGlow)" />
+  <circle cx="92" cy="36" r="10.5" fill="#10B981" fill-opacity="0.28" />
+  <circle cx="92" cy="36" r="6" fill="#34D399" stroke="#ECFDF5" stroke-width="2" />
+</svg>

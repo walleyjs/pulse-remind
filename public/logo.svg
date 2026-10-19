@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 100" width="460" height="100" fill="none">
+  <defs>
+    <linearGradient id="iconBg" x1="6" y1="6" x2="94" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#06121E" />
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="16" y1="62" x2="80" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+    <linearGradient id="wordmarkGrad" x1="215" y1="25" x2="365" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#818CF8" />
+      <stop offset="50%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+  </defs>
+
+  <!-- Icon Mark -->
+  <rect x="6" y="6" width="88" height="88" rx="22" fill="url(#iconBg)" stroke="#334155" stroke-width="2" />
+  <circle cx="50" cy="52" r="28" stroke="#6366F1" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="3 3" />
+  <path
+    d="M32 55V43C32 33.06 40.06 25 50 25C54.8 25 59.1 26.8 62.3 29.8"
+    stroke="#6366F1"
+    stroke-opacity="0.45"
+    stroke-width="2.8"
+    stroke-linecap="round"
+  />
+  <path
+    d="M18 58H30L37 46L45 68L55 32L63 50L72 28"
+    stroke="url(#waveGrad)"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="72" cy="28" r="8" fill="#10B981" fill-opacity="0.28" />
+  <circle cx="72" cy="28" r="4.5" fill="#34D399" stroke="#ECFDF5" stroke-width="1.5" />
+
+  <!-- Wordmark: PulseRemind -->
+  <text
+    x="114"
+    y="56"
+    font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    font-size="36"
+    font-weight="800"
+    letter-spacing="-0.8"
+    fill="#F8FAFC"
+  >
+    Pulse<tspan fill="url(#wordmarkGrad)">Remind</tspan>
+  </text>
+
+  <!-- Subtitle Tagline -->
+  <text
+    x="116"
+    y="78"
+    font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    font-size="12"
+    font-weight="600"
+    letter-spacing="1.8"
+    fill="#94A3B8"
+  >
+    AI CHAT OPPORTUNITY MONITOR
+  </text>
+</svg>

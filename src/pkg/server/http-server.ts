@@ -20,7 +20,8 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml'
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png'
 };
 
 function sendJson(res: http.ServerResponse, status: number, data: unknown): void {
@@ -150,13 +151,82 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      // 3. OpenAI ChatGPT Plugin Manifests & Streamable HTTP MCP (/mcp)
+      // 3. OpenAI ChatGPT Plugin Manifests, OAuth 2.0 Discovery & Streamable HTTP MCP (/mcp)
+      if (pathname === '/.well-known/oauth-protected-resource' && req.method === 'GET') {
+        sendJson(res, 200, {
+          resource: `${baseUrl}/mcp`,
+          authorization_servers: [baseUrl],
+          bearer_methods_supported: ['header']
+        });
+        return;
+      }
+
+      if (
+        (pathname === '/.well-known/oauth-authorization-server' ||
+          pathname === '/.well-known/openid-configuration') &&
+        req.method === 'GET'
+      ) {
+        sendJson(res, 200, {
+          issuer: baseUrl,
+          authorization_endpoint: `${baseUrl}/oauth/authorize`,
+          token_endpoint: `${baseUrl}/oauth/token`,
+          registration_endpoint: `${baseUrl}/oauth/register`,
+          response_types_supported: ['code'],
+          grant_types_supported: ['authorization_code', 'refresh_token'],
+          token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+          code_challenge_methods_supported: ['S256', 'plain'],
+          scopes_supported: ['mcp:tools', 'read', 'write']
+        });
+        return;
+      }
+
+      if (pathname === '/oauth/register' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        sendJson(res, 201, {
+          client_id: 'pulseremind_chatgpt_client',
+          client_secret: 'pulseremind_public_secret',
+          client_name: body.client_name || 'ChatGPT MCP Plugin',
+          redirect_uris: body.redirect_uris || [],
+          grant_types: ['authorization_code', 'refresh_token'],
+          response_types: ['code'],
+          token_endpoint_auth_method: 'none'
+        });
+        return;
+      }
+
+      if (pathname === '/oauth/authorize' && req.method === 'GET') {
+        const redirectUri = parsedUrl.searchParams.get('redirect_uri');
+        const state = parsedUrl.searchParams.get('state') || '';
+        if (redirectUri) {
+          const target = new URL(redirectUri);
+          target.searchParams.set('code', 'prm_oauth_code_live');
+          if (state) target.searchParams.set('state', state);
+          res.writeHead(302, { Location: target.toString() });
+          res.end();
+          return;
+        }
+        sendJson(res, 200, { code: 'prm_oauth_code_live', state });
+        return;
+      }
+
+      if (pathname === '/oauth/token' && req.method === 'POST') {
+        sendJson(res, 200, {
+          access_token: 'prm_live_access_token',
+          token_type: 'Bearer',
+          expires_in: 86400 * 30,
+          refresh_token: 'prm_live_refresh_token',
+          scope: 'mcp:tools'
+        });
+        return;
+      }
+
       if ((pathname === '/plugin.json' || pathname === '/.well-known/mcp.json') && req.method === 'GET') {
         sendJson(res, 200, {
           name: 'pulseremind',
           version: '1.0.0',
           description:
             'Captures future-dated scholarships, fellowships, and admissions mentioned in AI chats, monitors their web pages, and notifies users when applications open.',
+          icon: `${baseUrl}/pulseremind-icon-256.png`,
           skills: './skills',
           mcp: {
             connection: {

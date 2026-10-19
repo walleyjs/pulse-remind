@@ -31,7 +31,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
-      RENDER_APP_URL: ${{ vars.RENDER_APP_URL || secrets.RENDER_APP_URL || 'https://pulseremind-ai-chat-tools.onrender.com' }}
+      RENDER_APP_URL: ${{ vars.RENDER_APP_URL || secrets.RENDER_APP_URL || 'https://pulse-remind.onrender.com' }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
       - name: Wake Render Service & Trigger Resolution Engine Cycle

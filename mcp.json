@@ -1,6 +1,6 @@
 {
   "connection": {
     "type": "http",
-    "url": "https://pulseremind-ai-chat-tools.onrender.com/mcp"
+    "url": "https://pulse-remind.onrender.com/mcp"
   }
 }
