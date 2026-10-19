@@ -50,7 +50,7 @@ export function loadConfig(): AppConfig {
       process.env.PULSEREMIND_DB_PATH ||
       path.join(process.cwd(), 'data', 'pulseremind.db'),
     defaultRecipientEmail:
-      process.env.DEFAULT_RECIPIENT_EMAIL || 'student@university.edu',
+      process.env.DEFAULT_RECIPIENT_EMAIL || '',
     resolution: {
       schedulerIntervalMs: Number(process.env.SCHEDULER_INTERVAL_MS || 60_000),
       cacheTtlMs: Number(process.env.ORACLE_CACHE_TTL_MS || 120_000),
@@ -70,8 +70,11 @@ export function loadConfig(): AppConfig {
       upstashRedisRestUrl: process.env.UPSTASH_REDIS_REST_URL || null,
       upstashRedisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN || null,
       firecrawlApiKey: process.env.FIRECRAWL_API_KEY || null,
-      // Render automatically injects RENDER_EXTERNAL_URL (e.g. https://pulseremind.onrender.com)
-      renderExternalUrl: process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || null,
+      // Render automatically injects RENDER_EXTERNAL_URL; default to live production URL when not running in-memory tests
+      renderExternalUrl:
+        process.env.RENDER_EXTERNAL_URL ||
+        process.env.PUBLIC_APP_URL ||
+        (process.env.PULSEREMIND_DB_PATH === ':memory:' ? null : 'https://pulse-remind.onrender.com'),
       cronSecret: process.env.CRON_SECRET || null,
       keepAliveIntervalMs: Number(process.env.KEEPALIVE_INTERVAL_MS || 13 * 60 * 1000) // 13 mins (< Render's 15m idle sleep)
     }

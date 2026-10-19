@@ -1,59 +1,54 @@
-# PulseRemind — AI Chat Opportunity Reminder & Web Monitor
+# PulseRemind — AI Chat Event, Date & Web-State Reminder
 
-**PulseRemind** is an MCP Server, OpenAPI Tool Service, Web-Monitoring Engine, and Multi-Channel Notification Dispatcher.
+**PulseRemind** is a privacy-first MCP Server, OpenAPI Tool Service, Web-Monitoring Engine, and Multi-Channel Notification Dispatcher for **ChatGPT, Claude, Cursor, Antigravity, and Google Gemini**.
 
-When you are planning something in an LLM chat (such as graduate school scholarships, fellowships, grants, or admissions that won't open until **the end of the month** or **early next year**), the AI assistant invokes PulseRemind to capture the conversation context, schedule a smart web watch, monitor the target portal, and alert you across **Email, In-App Dashboard, Slack, Discord, Telegram, and WhatsApp** the moment applications open.
+Whenever you mention an upcoming event, conference, ticket drop, product launch, registration, deadline, scholarship, or general date reminder during an AI chat, PulseRemind captures your action checklist, monitors the target web page or scheduled date window, binds your email once inside the chat, and alerts you across **Email (Resend), Native Calendar (`.ics` / Google Calendar), Web Push (`Service Worker`), Telegram, Slack, Discord, and WhatsApp**.
 
 ---
 
-## Quick Start
+## Live Production Endpoints
 
-Requires **Node.js v22.6+ / v23+** (uses native TypeScript execution and built-in `node:sqlite` — zero external npm install required).
-
-```bash
-# Start the Web Dashboard, REST Tool API, MCP HTTP Server & Background Scheduler
-npm start
-```
-
-Then open **http://localhost:3456** in your browser.
-
-```bash
-# Run the End-to-End Automated Test Suite
-npm test
-```
+- **Web Dashboard**: `https://pulse-remind.onrender.com`
+- **MCP Streamable HTTP Endpoint**: `https://pulse-remind.onrender.com/mcp`
+- **OpenAPI 3.1 Tool Spec**: `https://pulse-remind.onrender.com/api/openapi.json`
+- **Gemini Function Declarations**: `https://pulse-remind.onrender.com/api/gemini-tools.json`
+- **Live iCalendar (`.ics`) Feed**: `https://pulse-remind.onrender.com/api/calendar/all.ics`
 
 ---
 
 ## Connecting to AI Chat Clients
 
-### 1. Model Context Protocol (MCP) — Claude Desktop, Cursor, Antigravity
-Add the stdio MCP server to your `mcpServers` configuration:
+### 1. ChatGPT Apps / Custom MCP Server & Claude / Cursor (`mcpServers` config)
 
 ```json
 {
   "mcpServers": {
     "pulseremind": {
-      "command": "node",
-      "args": [
-        "--no-warnings",
-        "/path/to/pulseremind/src/mcp/stdio-server.ts"
-      ]
+      "type": "http",
+      "url": "https://pulse-remind.onrender.com/mcp"
     }
   }
 }
 ```
 
-Or connect over HTTP JSON-RPC at:
-- `POST http://localhost:3456/mcp`
-
 ### 2. Available MCP Tools
-- `create_opportunity_watch`: Registers a new web-monitored reminder with conversation context, expected opening timeframe (`"end of this month"`, `"early next year"`), target URL, and notification channels.
-- `extract_watches_from_chat`: Parses a raw conversation transcript between a user and an LLM to automatically extract and schedule future-dated opportunities.
+- `create_opportunity_watch`: Registers a scheduled-date or web-monitored reminder with action checklist, expected timeframe, optional target URL, and 1-click Google Calendar / `.ics` links.
+- `set_notification_destination`: Binds the user's email address (and optional push channels) right inside the AI chat and remembers it as their persistent default for all future reminders.
+- `extract_watches_from_chat`: Parses a conversation snippet to automatically extract and schedule multiple upcoming events or opportunities.
 - `list_active_watches`: Lists all tracked watches and their current status (`hibernating`, `active_monitoring`, `triggered_open`, `paused`).
 - `check_watch_now`: Immediately scrapes and evaluates a watch's target webpage and dispatches alerts if open.
 - `update_or_cancel_watch`: Pauses, resumes, or deletes a watch.
 
-### 3. ChatGPT Custom GPT Actions (OpenAPI 3.1)
-Import the OpenAPI schema directly from:
-- `GET http://localhost:3456/api/openapi.json`
+---
 
+## Local Development & E2E Testing
+
+Requires **Node.js v22.6+ / v23+** (native TypeScript execution and built-in `node:sqlite`).
+
+```bash
+# Start the server
+npm start
+
+# Run the 11-test End-to-End Automated Test Suite
+npm test
+```

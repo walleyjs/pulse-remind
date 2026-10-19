@@ -1,3 +1,4 @@
+import { config } from '../../config/index.ts';
 import { chatExtractorService, inferCategoryFromText } from '../../internal/extractor/service.ts';
 import { notificationService } from '../../internal/notification/service.ts';
 import { resolveTimeframeWindow } from '../../internal/extractor/timeframe.ts';
@@ -253,7 +254,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
 export async function executeMcpTool(
   name: string,
   args: Record<string, unknown>,
-  baseUrl = 'http://localhost:3456',
+  baseUrl = config.cloud.renderExternalUrl || 'http://localhost:3456',
   oauthEmail?: string | null
 ): Promise<unknown> {
   switch (name) {

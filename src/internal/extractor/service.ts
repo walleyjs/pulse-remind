@@ -1,3 +1,4 @@
+import { config } from '../../config/index.ts';
 import type { CreateWatchInput } from '../watch/model.ts';
 import { resolveTimeframeWindow } from './timeframe.ts';
 
@@ -88,7 +89,7 @@ export class ChatExtractorService {
   resolveCanonicalUrl(
     titleOrText: string,
     windowLabel: string,
-    defaultDemoBaseUrl = 'http://localhost:3456'
+    defaultDemoBaseUrl = config.cloud.renderExternalUrl || 'http://localhost:3456'
   ): string {
     for (const entry of CANONICAL_OPPORTUNITY_REGISTRY) {
       if (entry.keywords.test(titleOrText)) {
@@ -107,7 +108,7 @@ export class ChatExtractorService {
 
   extractWatchesFromTranscript(
     transcript: string,
-    defaultDemoBaseUrl = 'http://localhost:3456'
+    defaultDemoBaseUrl = config.cloud.renderExternalUrl || 'http://localhost:3456'
   ): ExtractedChatOpportunity[] {
     const results: ExtractedChatOpportunity[] = [];
     const clean = transcript.trim();

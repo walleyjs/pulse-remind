@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PulseRemind — AI Chat Opportunity Reminder & Web Monitor</title>
+  <title>PulseRemind — AI Chat Event, Date &amp; Web-State Reminder</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="apple-touch-icon" href="/pulseremind-icon-256.png" />
+  <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -15,7 +16,7 @@
         <img src="/favicon.svg" alt="PulseRemind Logo" width="42" height="42" style="border-radius: 10px;" />
         <div>
           <div class="brand-title">PulseRemind <span class="brand-tag">MCP + Web Monitor</span></div>
-          <div class="brand-subtitle">Catches future-dated scholarships &amp; plans from AI chats and alerts you the moment they open</div>
+          <div class="brand-subtitle">Catches future-dated events, tickets, launches &amp; scholarships from AI chats and alerts you</div>
         </div>
       </div>
       <div class="topbar-actions">
@@ -38,9 +39,9 @@
       <div class="simulator-header">
         <div>
           <span class="eyebrow">🔬 Interactive End-to-End Demo Control</span>
-          <h2 id="simHeading">Simulated External Scholarship Portals</h2>
+          <h2 id="simHeading">Simulated External Portals</h2>
           <p class="muted">
-            Flip any scholarship portal below from <strong>Closed</strong> to <strong>Open</strong> to watch PulseRemind scrape the page, detect the opening &amp; deadline, and dispatch Email, In-App, and Messaging notifications in real time.
+            Flip any portal below from <strong>Closed</strong> to <strong>Open</strong> to watch PulseRemind scrape the page, detect the opening &amp; deadline, and dispatch Email, In-App, and Push notifications in real time.
           </p>
         </div>
       </div>
@@ -62,11 +63,11 @@
             <div class="preset-buttons">
               <button type="button" class="chip-btn" data-preset="end-of-month">Preset: End of Month Scholarship</button>
               <button type="button" class="chip-btn" data-preset="early-next-year">Preset: Early Next Year Grant</button>
-              <button type="button" class="chip-btn" data-preset="multi">Preset: Multi-Scholarship Plan</button>
+              <button type="button" class="chip-btn" data-preset="multi">Preset: Multi-Event Plan</button>
             </div>
           </div>
           <p class="muted">
-            Paste or edit a conversation snippet where you and an LLM discuss scholarships or applications that aren't open yet. PulseRemind extracts the target window, context, and URL and sets a web-monitored reminder.
+            Paste or edit a conversation snippet where you and an LLM discuss upcoming events, conferences, tickets, launches, or scholarships. PulseRemind extracts the target window, context, and URL and sets a reminder.
           </p>
           <form id="chatExtractForm" class="extract-form">
             <label for="chatTranscriptInput" class="sr-only">AI Chat Transcript</label>
@@ -74,13 +75,13 @@
               id="chatTranscriptInput"
               rows="4"
               required
-              placeholder="e.g., We are planning my MSc applications. The Global AI Graduate Scholarship ($45k) won't open until the end of this month, and the Oxford Clarendon Fellowship opens early next year (January 2027)..."
+              placeholder="e.g., WWDC registration opens at the end of this month, and the Global AI Graduate Scholarship opens early next year (January 2027)..."
             >User: I'm planning my Fall 2027 Master's applications, but the Horizon Global AI Fellowship won't open until the end of this month, and the Commonwealth Emerging Leaders Grant doesn't open until early next year (January 2027).
 Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemind web watch for both so you get notified the day their portals open!</textarea>
             <div class="extract-actions">
               <div class="input-inline">
                 <label for="extractEmailInput">Notify Email:</label>
-                <input type="email" id="extractEmailInput" value="student@university.edu" required />
+                <input type="email" id="extractEmailInput" placeholder="you@example.com" />
               </div>
               <button type="submit" class="btn btn-primary" id="extractSubmitBtn">
                 ✨ Extract &amp; Schedule Reminders from Chat
@@ -94,7 +95,7 @@ Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemi
         <section class="card" aria-labelledby="watchesHeading">
           <div class="card-header">
             <div>
-              <span class="eyebrow">🎯 Monitored Opportunities &amp; Scheduled Reminders</span>
+              <span class="eyebrow">🎯 Monitored Events &amp; Scheduled Reminders</span>
               <h2 id="watchesHeading">Your AI Chat Watches <span id="watchesCountBadge" class="count-pill">0</span></h2>
             </div>
             <div class="filter-tabs" role="tablist" aria-label="Filter watches by status">
@@ -166,13 +167,13 @@ Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemi
   <dialog id="createWatchDialog" closedby="any" aria-labelledby="createWatchDialogTitle">
     <div class="dialog-content">
       <div class="dialog-header">
-        <h2 id="createWatchDialogTitle">Create Opportunity Watch</h2>
+        <h2 id="createWatchDialogTitle">Create Event or Opportunity Watch</h2>
         <button type="button" class="close-icon-btn" id="closeCreateModalBtn" aria-label="Close modal">&times;</button>
       </div>
       <form id="createWatchForm" class="modal-form">
         <div class="form-group">
-          <label for="watchTitle">Opportunity / Scholarship Name *</label>
-          <input type="text" id="watchTitle" name="title" required placeholder="e.g., Rhodes Global Scholarship 2027" />
+          <label for="watchTitle">Event / Conference / Opportunity Name *</label>
+          <input type="text" id="watchTitle" name="title" required placeholder="e.g., Apple WWDC 2027 Registration or Rhodes Scholarship" />
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -185,21 +186,21 @@ Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemi
           </div>
         </div>
         <div class="form-group">
-          <label for="watchTargetUrl">Scholarship / Application URL to Monitor</label>
-          <input type="url" id="watchTargetUrl" name="target_url" placeholder="http://localhost:3456/demo/scholarships/global-ai-fellowship" />
+          <label for="watchTargetUrl">Event / Application URL to Monitor (Leave blank for pure date reminder)</label>
+          <input type="url" id="watchTargetUrl" name="target_url" placeholder="https://pulse-remind.onrender.com/demo/scholarships/global-ai-fellowship" />
         </div>
         <div class="form-group">
           <label for="watchCondition">Opening Condition to Detect *</label>
-          <input type="text" id="watchCondition" name="condition_text" required value="Applications are open for the 2027 cohort" />
+          <input type="text" id="watchCondition" name="condition_text" required value="Registration or applications open" />
         </div>
         <div class="form-group">
-          <label for="watchContext">AI Chat Planning Context *</label>
-          <textarea id="watchContext" name="chat_context" rows="3" required placeholder="Notes from your AI chat (e.g., required essays, references, degree track)..."></textarea>
+          <label for="watchContext">AI Chat Action Checklist *</label>
+          <textarea id="watchContext" name="chat_context" rows="3" required placeholder="Action items to remember (e.g., buy early-bird ticket, submit 2-page proposal)..."></textarea>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label for="watchEmail">Notification Email</label>
-            <input type="email" id="watchEmail" name="recipient_email" value="student@university.edu" />
+            <input type="email" id="watchEmail" name="recipient_email" placeholder="you@example.com" />
           </div>
           <div class="form-group">
             <label>Alert Channels</label>
@@ -229,16 +230,17 @@ Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemi
       </div>
       <div class="mcp-modal-body">
         <p class="muted">
-          Add PulseRemind to <strong>Claude Desktop</strong>, <strong>Cursor</strong>, <strong>Antigravity</strong>, or <strong>ChatGPT Custom Actions</strong> so the LLM automatically schedules reminders whenever you mention scholarships or applications opening in the future.
+          Add PulseRemind to <strong>ChatGPT</strong>, <strong>Claude Desktop</strong>, <strong>Cursor</strong>, or <strong>Antigravity</strong> so the LLM automatically schedules reminders whenever you mention upcoming events, tickets, launches, deadlines, or scholarships.
         </p>
         <h3>1. Claude Desktop / Cursor / Antigravity (`mcpServers` config)</h3>
         <pre class="code-block" id="mcpConfigSnippet"></pre>
 
-        <h3>2. HTTP JSON-RPC &amp; OpenAPI Tool Endpoints</h3>
+        <h3>2. Live HTTP JSON-RPC, OpenAPI &amp; Calendar Endpoints</h3>
         <ul class="endpoint-list">
-          <li><strong>MCP HTTP JSON-RPC:</strong> <code>POST http://localhost:3456/mcp</code></li>
-          <li><strong>ChatGPT Actions OpenAPI Spec:</strong> <a href="/api/openapi.json" target="_blank"><code>GET /api/openapi.json</code></a></li>
-          <li><strong>Available MCP Tools:</strong> <code>create_opportunity_watch</code>, <code>extract_watches_from_chat</code>, <code>list_active_watches</code>, <code>check_watch_now</code>, <code>update_or_cancel_watch</code></li>
+          <li><strong>MCP Streamable HTTP Server URL:</strong> <code id="liveMcpEndpointText">https://pulse-remind.onrender.com/mcp</code></li>
+          <li><strong>ChatGPT Actions OpenAPI Spec:</strong> <a href="/api/openapi.json" target="_blank"><code id="liveOpenApiText">https://pulse-remind.onrender.com/api/openapi.json</code></a></li>
+          <li><strong>Live iCalendar Feed (.ics):</strong> <a href="/api/calendar/all.ics" target="_blank"><code id="liveIcsFeedText">https://pulse-remind.onrender.com/api/calendar/all.ics</code></a></li>
+          <li><strong>Available MCP Tools:</strong> <code>create_opportunity_watch</code>, <code>set_notification_destination</code>, <code>extract_watches_from_chat</code>, <code>list_active_watches</code>, <code>check_watch_now</code>, <code>update_or_cancel_watch</code></li>
         </ul>
       </div>
       <div class="dialog-footer">

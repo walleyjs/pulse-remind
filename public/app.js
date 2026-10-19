@@ -185,7 +185,7 @@ function renderWatches() {
           <div class="watch-meta">
             <span>🔗 <strong>Monitored URL:</strong> ${
               w.target_url
-                ? `<a href="${escapeHtml(w.target_url)}" target="_blank">${escapeHtml(w.target_url)}</a>`
+                ? `<a href="${escapeHtml(w.target_url.replace(/^http:\/\/localhost:\d+/, window.location.origin))}" target="_blank">${escapeHtml(w.target_url.replace(/^http:\/\/localhost:\d+/, window.location.origin))}</a>`
                 : 'Date-only Reminder'
             }</span>
             <span>⏱ <strong>Last Checked:</strong> ${escapeHtml(formatTime(w.last_checked_at))}</span>
@@ -208,10 +208,17 @@ function renderWatches() {
               ${(w.notify_channels || [])
                 .map((ch) => `<span class="channel-tag">🔔 ${escapeHtml(ch.toUpperCase())}</span>`)
                 .join('')}
-              ${w.recipient_email ? `<span class="channel-tag">✉️ ${escapeHtml(w.recipient_email)}</span>` : ''}
+              ${
+                w.recipient_email && w.recipient_email !== 'student@university.edu'
+                  ? `<span class="channel-tag">✉️ ${escapeHtml(w.recipient_email)}</span>`
+                  : `<span class="channel-tag" style="color:#fbbf24;">⚠️ Email Unbound</span>`
+              }
             </div>
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
               ${applyButtonHtml}
+              <a class="btn btn-sm btn-secondary" href="/api/watches/${encodeURIComponent(w.id)}/calendar.ics" style="text-decoration:none;">
+                📅 Calendar (.ics)
+              </a>
               <button type="button" class="btn btn-sm btn-secondary" data-check-watch="${escapeHtml(w.id)}">
                 🔍 Check Webpage Now
               </button>
@@ -307,7 +314,11 @@ function renderChannels() {
     .map((ch) => {
       let configFieldHtml = '';
       if (ch.channel === 'email') {
-        configFieldHtml = `<input class="channel-input" data-cfg-key="default_recipient" placeholder="Recipient email" value="${escapeHtml(ch.config.default_recipient || 'student@university.edu')}" />`;
+        const currentEmail =
+          ch.config.default_recipient && ch.config.default_recipient !== 'student@university.edu'
+            ? ch.config.default_recipient
+            : '';
+        configFieldHtml = `<input class="channel-input" data-cfg-key="default_recipient" placeholder="you@example.com" value="${escapeHtml(currentEmail)}" />`;
       } else if (ch.channel === 'slack' || ch.channel === 'discord') {
         configFieldHtml = `<input class="channel-input" data-cfg-key="webhook_url" placeholder="https://hooks.slack.com/services/... (optional for sandbox)" value="${escapeHtml(ch.config.webhook_url || '')}" />`;
       } else if (ch.channel === 'telegram') {
@@ -546,16 +557,25 @@ window.addEventListener('DOMContentLoaded', () => {
     await fetchOverview();
   });
 
+  // Register W3C Service Worker for Web Push Notifications
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
   // MCP Config Modal Dialog (always open with showModal() per light-dismiss-a-dialog guide)
   const mcpDialog = document.getElementById('mcpConfigDialog');
   const mcpSnippet = document.getElementById('mcpConfigSnippet');
+  const liveOrigin = window.location.origin.includes('localhost')
+    ? 'https://pulse-remind.onrender.com'
+    : window.location.origin;
+
   if (mcpSnippet) {
     mcpSnippet.textContent = JSON.stringify(
       {
         mcpServers: {
           pulseremind: {
-            command: 'node',
-            args: ['--no-warnings', '/path/to/pulseremind/src/pkg/mcp/stdio-server.ts']
+            type: 'http',
+            url: `${liveOrigin}/mcp`
           }
         }
       },
@@ -563,6 +583,13 @@ window.addEventListener('DOMContentLoaded', () => {
       2
     );
   }
+  const liveMcpEl = document.getElementById('liveMcpEndpointText');
+  if (liveMcpEl) liveMcpEl.textContent = `${liveOrigin}/mcp`;
+  const liveOpenApiEl = document.getElementById('liveOpenApiText');
+  if (liveOpenApiEl) liveOpenApiEl.textContent = `${liveOrigin}/api/openapi.json`;
+  const liveIcsEl = document.getElementById('liveIcsFeedText');
+  if (liveIcsEl) liveIcsEl.textContent = `${liveOrigin}/api/calendar/all.ics`;
+
   document.getElementById('openMcpModalBtn')?.addEventListener('click', () => {
     mcpDialog?.showModal();
   });
