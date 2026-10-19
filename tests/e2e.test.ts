@@ -445,3 +445,45 @@ test('9. Zero-Friction Implicit Chat Shorthand & Out-of-Band Claim Token Binding
   assert.ok(claimed.resolution_config.provider_metadata.claimed_at);
 });
 
+test('10. General Event, Conference, Ticket Drop & Pure Scheduled-Date Reminder Support', async () => {
+  // 10a. Create a pure scheduled-date reminder (no URL required)
+  const dateReminderRes = (await executeMcpTool('create_opportunity_watch', {
+    title: 'Q4 Product Launch Keynote & Press Embargo Lift',
+    category: 'product_launch',
+    trigger_type: 'scheduled_date',
+    timeframe_text: 'end of this month',
+    chat_context: 'Publish blog announcement; send press kit to tech journalists; unlock landing page.'
+  })) as {
+    success: boolean;
+    watch: { id: string; category: string; trigger_type: string; status: string };
+  };
+
+  assert.equal(dateReminderRes.success, true);
+  assert.equal(dateReminderRes.watch.category, 'product_launch');
+  assert.equal(dateReminderRes.watch.trigger_type, 'scheduled_date');
+
+  // 10b. Extract general events & conferences (e.g., WWDC & Next.js Summit) from chat transcript
+  const eventTranscript =
+    'User: WWDC registration opens at the end of this month, and Next.js Global Summit Tickets drop early next year. Remind me to grab an early-bird pass and book my flight.';
+  const extractRes = (await executeMcpTool('extract_watches_from_chat', {
+    transcript: eventTranscript,
+    auto_create: true
+  })) as {
+    success: boolean;
+    extracted_opportunities: Array<{ title: string; category: string }>;
+  };
+
+  assert.equal(extractRes.success, true);
+  assert.ok(
+    extractRes.extracted_opportunities.some((o) => o.title.includes('WWDC')),
+    'Should extract WWDC conference event from chat'
+  );
+  assert.ok(
+    extractRes.extracted_opportunities.some(
+      (o) => o.category === 'conference' || o.category === 'tickets'
+    ),
+    'Should classify extracted items as conference or tickets'
+  );
+});
+
+

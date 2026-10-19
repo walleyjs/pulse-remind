@@ -1,7 +1,7 @@
 {
   "name": "pulseremind",
   "version": "1.0.0",
-  "description": "AI Chat Opportunity Reminder & Web-Monitor Plugin. Captures scholarships, fellowships, and school applications that aren't open yet (e.g. opening end of month or early next year), monitors their web portals, and alerts users when applications open.",
+  "description": "AI Chat Event, Date & Web-State Reminder Plugin. Captures any future event, registration, ticket sale, product launch, deadline, or application window mentioned during AI chats, monitors web pages or target dates, and notifies users the moment they open or arrive.",
   "skills": "./skills",
   "mcp": "./mcp.json"
 }

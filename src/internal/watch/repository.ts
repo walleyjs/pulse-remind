@@ -111,18 +111,41 @@ export class WatchRepository {
     const expectedKeywords =
       input.expected_keywords && input.expected_keywords.length > 0
         ? input.expected_keywords
-        : ['applications are open', 'applications are now open', 'apply now', 'start application', 'registration open'];
+        : [
+            'applications are open',
+            'applications are now open',
+            'apply now',
+            'start application',
+            'registration open',
+            'registration is open',
+            'registration is now open',
+            'register now',
+            'tickets available',
+            'tickets are now on sale',
+            'on sale now',
+            'get tickets',
+            'buy tickets',
+            'enrollment is open'
+          ];
     const closedKeywords =
       input.closed_keywords && input.closed_keywords.length > 0
         ? input.closed_keywords
-        : ['currently closed', 'not yet open', 'check back soon', 'applications closed', 'opening soon'];
+        : [
+            'currently closed',
+            'not yet open',
+            'check back soon',
+            'applications closed',
+            'registration closed',
+            'not yet on sale',
+            'opening soon'
+          ];
 
     const { status, pollAfter } = determineInitialStatusAndPollAfter(input.window_start_date, input.target_url);
     const triggerType: TriggerType =
       input.trigger_type || (input.target_url ? (input.window_start_date ? 'hybrid' : 'web_monitor') : 'scheduled_date');
 
     const resConfig: ResolutionConfig = {
-      primary_source_name: input.resolution_config?.primary_source_name || 'Official Scholarship Portal',
+      primary_source_name: input.resolution_config?.primary_source_name || 'Official Event & Opportunity Portal',
       primary_source_url: input.target_url || null,
       secondary_source_name: input.resolution_config?.secondary_source_name || 'Backup Mirror',
       secondary_source_url: input.secondary_url || input.resolution_config?.secondary_source_url || null,
@@ -152,7 +175,7 @@ export class WatchRepository {
     `).run(
       id,
       input.title,
-      input.category || 'scholarship',
+      input.category || 'event_or_opportunity',
       input.chat_context,
       input.source_chat_client || 'MCP Client',
       input.target_url || null,

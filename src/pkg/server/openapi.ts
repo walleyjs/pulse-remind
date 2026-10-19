@@ -9,17 +9,17 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'PulseRemind — AI Chat Opportunity Reminder & Web Monitor API',
+      title: 'PulseRemind — AI Chat Event, Date & Web-State Reminder API',
       version: '1.0.0',
       description:
-        'Privacy-first tool API for ChatGPT Actions and Google Gemini Extensions. Captures future-dated opportunities mentioned during AI chats (e.g., scholarships opening at the end of the month or early next year), monitors their web portals, and alerts users when applications open. Never pass raw user PII; only pass the public opportunity title, timeframe, and a short non-PII preparation checklist.'
+        'Privacy-first tool API for ChatGPT Plugins/Actions and Google Gemini Extensions. Captures future-dated events, conferences, ticket drops, product launches, registrations, deadlines, scholarships, or custom date reminders mentioned during AI chats, monitors web portals or triggers on date windows, and alerts users when they open or come due. Never pass raw user PII; only pass the public event/reminder title, timeframe, and a short non-PII action checklist.'
     },
     servers: [{ url: baseUrl, description: 'PulseRemind API Server' }],
     paths: {
       '/api/watches': {
         get: {
           operationId: 'listActiveWatches',
-          summary: 'List all tracked opportunity watches and reminders',
+          summary: 'List all tracked event watches and scheduled reminders',
           'x-openai-isConsequential': false,
           parameters: [
             {
@@ -35,7 +35,7 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
           ],
           responses: {
             '200': {
-              description: 'List of tracked opportunity watches',
+              description: 'List of tracked event watches and reminders',
               content: {
                 'application/json': {
                   schema: {
@@ -55,7 +55,7 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
         post: {
           operationId: 'createOpportunityWatch',
           summary:
-            'Create a web-monitored reminder when the user mentions a scholarship, admission, or grant that is not open yet',
+            'Create a scheduled or web-monitored reminder for any future event, conference, ticket drop, registration, product launch, scholarship, or deadline',
           'x-openai-isConsequential': false,
           requestBody: {
             required: true,
@@ -86,7 +86,7 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
         post: {
           operationId: 'extractWatchesFromChat',
           summary:
-            'Extract deferred opportunities and opening timeframes from a chat snippet and automatically schedule watches',
+            'Extract upcoming events, registrations, ticket sales, deadlines, or reminders and opening timeframes from a chat snippet and automatically schedule watches',
           'x-openai-isConsequential': false,
           requestBody: {
             required: true,
@@ -99,12 +99,12 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
                     transcript: {
                       type: 'string',
                       description:
-                        'Sanitized conversation snippet where the user discusses scholarships or applications opening in the future'
+                        'Sanitized conversation snippet where the user discusses upcoming events, registrations, ticket sales, launches, deadlines, or reminders'
                     },
                     auto_create: {
                       type: 'boolean',
                       default: true,
-                      description: 'Automatically create watches for extracted opportunities'
+                      description: 'Automatically create watches for extracted events and reminders'
                     },
                     recipient_email: {
                       type: 'string',
@@ -117,7 +117,7 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
           },
           responses: {
             '200': {
-              description: 'Extracted opportunities and created watches'
+              description: 'Extracted events/reminders and created watches'
             }
           }
         }
@@ -125,7 +125,7 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
       '/api/watches/{id}/check': {
         post: {
           operationId: 'checkWatchNow',
-          summary: 'Immediately scrape and evaluate the target URL for a watch via the Resolution Engine',
+          summary: 'Immediately evaluate the target URL or scheduled date window for an event/reminder watch via the Resolution Engine',
           'x-openai-isConsequential': false,
           parameters: [
             {
@@ -150,24 +150,50 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
           properties: {
             title: {
               type: 'string',
-              description: 'Name of the public scholarship, fellowship, or opportunity'
+              description: 'Name of the event, conference, ticket sale, product launch, registration, scholarship, or general reminder'
+            },
+            category: {
+              type: 'string',
+              enum: [
+                'event',
+                'conference',
+                'tickets',
+                'registration',
+                'product_launch',
+                'deadline',
+                'reminder',
+                'scholarship',
+                'fellowship',
+                'grant',
+                'admission',
+                'accelerator',
+                'visa',
+                'general'
+              ],
+              description: 'Category of reminder or event'
+            },
+            trigger_type: {
+              type: 'string',
+              enum: ['scheduled_date', 'web_monitor', 'hybrid'],
+              description:
+                'How the reminder triggers: "scheduled_date" (fires when the date/time arrives, no URL required), "web_monitor" (scrapes target_url), or "hybrid"'
             },
             chat_context: {
               type: 'string',
               description:
-                'Short, non-PII action checklist of what the user needs to prepare (e.g., "Prepare 2-page research proposal and request 2 academic references"). Never include personal identity or sensitive chat history.'
+                'Short, non-PII action checklist of what the user wants to remember or prepare (e.g., "Buy early-bird ticket; book hotel near Moscone Center; submit speaker abstract"). Never include personal identity or sensitive chat history.'
             },
             target_url: {
               type: 'string',
-              description: 'Optional URL of the scholarship portal to monitor'
+              description: 'Optional URL of the event page, ticket portal, or registration site to monitor. Omit for pure date reminders.'
             },
             timeframe_text: {
               type: 'string',
-              description: 'Expected opening window (e.g., "end of this month", "early next year")'
+              description: 'Natural language date or timeframe (e.g., "end of this month", "next Friday", "in 2 weeks", "early next year", or ISO date)'
             },
             condition_text: {
               type: 'string',
-              description: 'Condition to detect on the page'
+              description: 'Condition to trigger on (e.g., "Registration or ticket sales open", "Scheduled reminder date reached")'
             },
             recipient_email: {
               type: 'string',
@@ -188,6 +214,8 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
           properties: {
             id: { type: 'string' },
             title: { type: 'string' },
+            category: { type: 'string' },
+            trigger_type: { type: 'string' },
             status: { type: 'string' },
             target_url: { type: 'string', nullable: true },
             window_label: { type: 'string', nullable: true },
@@ -222,7 +250,7 @@ export function buildGeminiToolsManifest(baseUrl: string): Record<string, unknow
     endpoint: `${baseUrl}/mcp`,
     openapi_url: `${baseUrl}/api/openapi.json`,
     system_instruction:
-      'Whenever the user mentions a scholarship, fellowship, admission, or grant that is not open yet (e.g. opening at the end of the month, next semester, or early next year), proactively call `create_opportunity_watch`. Do NOT ask the user for their personal details or email in chat; pass only a sanitized preparation checklist in `chat_context` and return the `claim_url` from the tool response so the user can bind their notification channel privately.',
+      'Whenever the user mentions an upcoming event, conference, ticket sale, registration, product launch, deadline, scholarship, or general reminder that happens in the future (e.g. "end of this month", "next Friday", "in 2 weeks", or "early next year"), proactively call `create_opportunity_watch`. Do NOT ask the user for their personal details or email in chat; pass only a sanitized action checklist in `chat_context` and return the `claim_url` from the tool response so the user can bind their notification channel privately.',
     tools: [
       {
         functionDeclarations: MCP_TOOLS.map((t) => ({

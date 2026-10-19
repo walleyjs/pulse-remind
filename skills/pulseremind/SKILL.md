@@ -1,18 +1,18 @@
 ---
 name: pulseremind
-description: Use this skill whenever the user mentions planning for a scholarship, fellowship, university admission, grant, or program whose applications are not open yet (e.g., "opens at the end of the month", "opens early next year", "not open until fall/spring"). Automatically schedules a web-monitored watch and returns a private claim link.
+description: Use this skill whenever the user wants a reminder or mentions planning for ANY future event, registration, ticket drop, conference, product launch, deadline, grant, scholarship, or application that is not open or due yet (e.g., "opens at the end of the month", "tickets go on sale next month", "opens early next year", "remind me next Friday"). Automatically schedules a date or web-monitored reminder and returns a private claim link.
 ---
 
-# PulseRemind — Deferred Opportunity & Scholarship Web Monitor
+# PulseRemind — Universal AI Chat Event, Date & Web-State Reminder
 
-When a user is planning for school, scholarships, fellowships, or grants during a chat and mentions that an application window is not open yet:
+Whenever a user is planning for an upcoming event, conference registration, ticket sale, product launch, deadline, or application window during a chat:
 
 ## Rules
-1. **Strict Data Minimization (Privacy-First)**:
-   - Never pass the user's full name, GPA, financial details, passport/ID numbers, or raw essay drafts to the tool.
-   - Distill `chat_context` into a short, non-PII **Preparation Checklist** (e.g., `"Prepare 2-page research proposal and request 2 academic reference letters"`).
-2. **Proactive Tool Invocation**:
-   - Call `create_opportunity_watch` (or `extract_watches_from_chat` if multiple scholarships are discussed in a single turn).
-   - You do NOT need to ask the user for their email address or the exact URL before calling the tool.
-3. **Surface the Private Claim Link**:
-   - After `create_opportunity_watch` succeeds, present the returned `watch.resolution_config.provider_metadata.claim_url` (`/claim/prm_...`) to the user so they can bind their Email, Telegram, Slack, or WhatsApp alert channel out-of-band without sharing personal contact details in the chat.
+1. **Works for Both General Scheduled Events AND Web-Monitored Openings**:
+   - **Pure Date/Time Reminders (`trigger_type: "scheduled_date"`)**: If the user wants a reminder for a date/event without a website to scrape, pass `trigger_type: "scheduled_date"`.
+   - **Web-Monitored Events (`trigger_type: "web_monitor"` or `"hybrid"`)**: If the event has a webpage where registration, tickets, or applications will flip from closed to open, pass `target_url` so the Resolution Engine monitors the live page.
+2. **Strict Data Minimization (Privacy-First)**:
+   - Never pass the user's full name, ID numbers, financial details, or raw personal chat history to the tool.
+   - Distill `chat_context` into a short, non-PII **Action Checklist** (e.g., `"Book early-bird conference pass and reserve hotel"` or `"Prepare 2-page proposal"`).
+3. **Proactive Tool Invocation & Private Claim Link**:
+   - Call `create_opportunity_watch` (or `extract_watches_from_chat` if multiple events are discussed) without asking the user for their email first, and surface the returned `claim_url` (`/claim/prm_...`) so they can bind Email, Telegram, Slack, or WhatsApp privately.

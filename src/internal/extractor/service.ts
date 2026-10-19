@@ -15,6 +15,7 @@ export interface ExtractedChatOpportunity {
 
 interface CanonicalRegistryEntry {
   canonicalTitle: string;
+  category: string;
   keywords: RegExp;
   defaultSlug: string;
   defaultTimeframe?: string;
@@ -23,35 +24,65 @@ interface CanonicalRegistryEntry {
 const CANONICAL_OPPORTUNITY_REGISTRY: CanonicalRegistryEntry[] = [
   {
     canonicalTitle: 'Chevening Emerging Leaders Scholarship 2027',
+    category: 'scholarship',
     keywords: /\bchevening\b/i,
     defaultSlug: 'chevening-emerging-leaders',
     defaultTimeframe: 'early next year'
   },
   {
     canonicalTitle: 'Fulbright Foreign Student Fellowship 2027',
+    category: 'scholarship',
     keywords: /\bfulbright\b/i,
     defaultSlug: 'chevening-emerging-leaders',
     defaultTimeframe: 'early next year'
   },
   {
     canonicalTitle: 'Gates Cambridge Graduate Scholarship 2027',
+    category: 'scholarship',
     keywords: /\bgates\s+cambridge\b/i,
     defaultSlug: 'global-ai-fellowship',
     defaultTimeframe: 'end of this month'
   },
   {
     canonicalTitle: 'Rhodes Global Postgraduate Scholarship 2027',
+    category: 'scholarship',
     keywords: /\brhodes\b/i,
     defaultSlug: 'global-ai-fellowship',
     defaultTimeframe: 'end of this month'
   },
   {
     canonicalTitle: 'Knight-Hennessy Stanford Scholars Program 2027',
+    category: 'scholarship',
     keywords: /\bknight[\s\-]hennessy\b/i,
     defaultSlug: 'global-ai-fellowship',
     defaultTimeframe: 'end of this month'
+  },
+  {
+    canonicalTitle: 'Y Combinator Startup Batch Application',
+    category: 'accelerator',
+    keywords: /\b(?:y\s+combinator|yc\s+batch|yc\s+application)\b/i,
+    defaultSlug: 'global-ai-fellowship',
+    defaultTimeframe: 'early next year'
+  },
+  {
+    canonicalTitle: 'Apple WWDC Developer Conference Registration',
+    category: 'event',
+    keywords: /\bwwdc\b/i,
+    defaultSlug: 'global-ai-fellowship',
+    defaultTimeframe: 'next month'
   }
 ];
+
+export function inferCategoryFromText(text: string): string {
+  if (/ticket|concert|festival|presale|on sale/i.test(text)) return 'tickets';
+  if (/conference|summit|hackathon|expo/i.test(text)) return 'conference';
+  if (/meetup|event|workshop|registration/i.test(text)) return 'event';
+  if (/launch|release|drop|preorder|restock|beta/i.test(text)) return 'product_launch';
+  if (/accelerator|combinator|pitch|incubat/i.test(text)) return 'accelerator';
+  if (/grant/i.test(text)) return 'grant';
+  if (/scholarship|fellowship|tuition|university|admission|bursary|phd|master/i.test(text)) return 'scholarship';
+  return 'reminder';
+}
 
 export class ChatExtractorService {
   resolveCanonicalUrl(
@@ -85,7 +116,7 @@ export class ChatExtractorService {
     const urlMatches = clean.match(/https?:\/\/[^\s)"'>]+/gi) || [];
 
     const namedPatterns = [
-      /([A-Z][A-Za-z0-9&’'\-]+(?:\s+[A-Z0-9][A-Za-z0-9&’'\-]+){0,5}\s+(?:Scholarship|Fellowship|Grant|Program|Award|Admission|Bursary|Fund)(?:\s+202\d)?)/g
+      /([A-Z][A-Za-z0-9&’'\-]+(?:\s+[A-Z0-9][A-Za-z0-9&’'\-]+){0,5}\s+(?:Scholarship|Fellowship|Grant|Program|Award|Admission|Bursary|Fund|Conference|Summit|Hackathon|Festival|Concert|Tickets|Registration|Launch|Accelerator|Cohort|Event)(?:\s+202\d)?)/g
     ];
 
     const foundTitles = new Set<string>();
@@ -94,15 +125,15 @@ export class ChatExtractorService {
     for (const regex of namedPatterns) {
       let m: RegExpExecArray | null;
       while ((m = regex.exec(clean)) !== null) {
-        const candidate = m[1].replace(/^(?:the|for|about|apply to|apply for)\s+/i, '').trim();
-        if (candidate.length >= 8 && !foundTitles.has(candidate.toLowerCase())) {
+        const candidate = m[1].replace(/^(?:the|for|about|apply to|apply for|attend|join)\s+/i, '').trim();
+        if (candidate.length >= 6 && !foundTitles.has(candidate.toLowerCase())) {
           foundTitles.add(candidate.toLowerCase());
           matches.push({ title: candidate, index: m.index });
         }
       }
     }
 
-    // Also match implicit shorthand mentions from our Canonical Opportunity Registry (e.g. "Fulbright doesn't open until...")
+    // Match implicit shorthand mentions from our Canonical Opportunity & Event Registry
     for (const entry of CANONICAL_OPPORTUNITY_REGISTRY) {
       const m = entry.keywords.exec(clean);
       if (m) {
@@ -120,19 +151,25 @@ export class ChatExtractorService {
       const windowInfo = resolveTimeframeWindow(clean);
       const targetUrl =
         urlMatches[0] || this.resolveCanonicalUrl(clean, windowInfo.window_label, defaultDemoBaseUrl);
-      const isScholarship =
-        /scholarship|school|tuition|fellowship|grant|university|master|phd|degree/i.test(clean);
+      const category = inferCategoryFromText(clean);
 
       results.push({
-        title: isScholarship ? 'Graduate School Scholarship Application' : 'Planned Opportunity Reminder',
-        category: isScholarship ? 'scholarship' : 'general',
+        title:
+          category === 'scholarship'
+            ? 'Graduate School Scholarship Application'
+            : category === 'event'
+              ? 'Upcoming Event Registration Reminder'
+              : category === 'ticket_drop'
+                ? 'Event Ticket On-Sale Reminder'
+                : 'Planned Event & Opportunity Reminder',
+        category,
         chat_context: clean.slice(0, 360),
         target_url: targetUrl,
         window_start_date: windowInfo.window_start_date,
         window_label: windowInfo.window_label,
-        condition_text: `Applications open (${windowInfo.window_label})`,
-        confidence: 0.82,
-        reasoning: `Detected future-dated planning intent ("${windowInfo.window_label}") in conversation.`
+        condition_text: `Event or registration opens (${windowInfo.window_label})`,
+        confidence: 0.85,
+        reasoning: `Detected future-dated event/planning intent ("${windowInfo.window_label}") in conversation.`
       });
       return results;
     }
@@ -163,14 +200,14 @@ export class ChatExtractorService {
 
       results.push({
         title: current.title,
-        category: /grant/i.test(current.title) ? 'grant' : 'scholarship',
+        category: inferCategoryFromText(current.title),
         chat_context: `From AI chat session: "${localContext}"`,
         target_url: targetUrl,
         window_start_date: windowInfo.window_start_date,
         window_label: windowInfo.window_label,
-        condition_text: `Applications for ${current.title} transition from closed to open (${windowInfo.window_label})`,
+        condition_text: `${current.title} transitions to open/live (${windowInfo.window_label})`,
         confidence: 0.94,
-        reasoning: `Extracted "${current.title}" with opening window "${windowInfo.window_label}" and linked web monitor target.`
+        reasoning: `Extracted "${current.title}" with target window "${windowInfo.window_label}" and linked monitor target.`
       });
     }
 

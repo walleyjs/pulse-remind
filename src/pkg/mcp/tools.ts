@@ -1,12 +1,21 @@
-import { chatExtractorService } from '../../internal/extractor/service.ts';
+import { chatExtractorService, inferCategoryFromText } from '../../internal/extractor/service.ts';
 import { resolveTimeframeWindow } from '../../internal/extractor/timeframe.ts';
 import { resolutionEngine } from '../../internal/resolution/engine.ts';
-import type { NotificationChannelType } from '../../internal/watch/model.ts';
+import type { NotificationChannelType, TriggerType } from '../../internal/watch/model.ts';
 import { watchService } from '../../internal/watch/service.ts';
+
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
 
 export interface McpToolDefinition {
   name: string;
   description: string;
+  annotations?: McpToolAnnotations;
   inputSchema: {
     type: 'object';
     properties: Record<string, unknown>;
@@ -18,33 +27,54 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_opportunity_watch',
     description:
-      'Use this tool during an AI chat when the user is planning for something that is not open yet (e.g., scholarships, university admissions, fellowships, grants) opening at the end of the month or early next year. PRIVACY & DATA MINIMIZATION RULE: Never pass the user\'s raw personal data (full name, GPA, financial details, ID numbers, or full essay drafts). Only pass the public opportunity title, target URL, timeframe, and a short non-PII action checklist (e.g., "Prepare 2-page research proposal & 2 reference letters").',
+      'Use this tool during an AI chat whenever the user wants a reminder for ANY future event, registration, ticket sale, product launch, conference, deadline, fellowship, scholarship, or plan that is not open or due yet (e.g., happening at the end of the month, next month, or early next year). Supports both scheduled-date reminders and live web-page monitoring. PRIVACY & DATA MINIMIZATION RULE: Never pass the user\'s raw personal data (full name, ID numbers, financial details, or full chat logs). Only pass the event/opportunity title, optional target URL, timeframe, and a short non-PII action checklist.',
+    annotations: {
+      title: 'Create Event or Opportunity Reminder Watch',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: 'object',
       properties: {
         title: {
           type: 'string',
-          description: 'Name of the public scholarship, grant, or opportunity (e.g., "Global AI Graduate Scholarship 2027")'
+          description:
+            'Name of the event, reminder, conference, ticket drop, launch, or opportunity (e.g., "Apple WWDC 2027 Registration", "Coachella Ticket Presale", "Global AI Fellowship 2027")'
+        },
+        category: {
+          type: 'string',
+          enum: ['general_reminder', 'event', 'ticket_drop', 'product_launch', 'grant', 'scholarship'],
+          description: 'Category of the event or reminder'
+        },
+        trigger_type: {
+          type: 'string',
+          enum: ['web_monitor', 'scheduled_date', 'hybrid'],
+          description:
+            'Use "scheduled_date" for pure date/time event reminders without a webpage, or "web_monitor" / "hybrid" to monitor a webpage until registration/applications open.'
         },
         chat_context: {
           type: 'string',
-          description: 'Short, non-PII action reminder of what the user needs to prepare when it opens (e.g., "Submit 2-page research proposal and 2 academic references"). Do NOT include personal identity or sensitive chat history.'
+          description:
+            'Short, non-PII action reminder of what the user planned or needs to do when the event arrives/opens (e.g., "Book early-bird pass and reserve hotel" or "Submit 2-page proposal"). Do NOT include personal identity or sensitive chat history.'
         },
         target_url: {
           type: 'string',
-          description: 'URL of the scholarship or application page to monitor for opening'
+          description: 'Optional URL of the event, ticket, or application page to monitor for opening'
         },
         timeframe_text: {
           type: 'string',
-          description: 'When it is expected to open (e.g., "end of this month", "early next year", "January 2027")'
+          description: 'When the event or opening is expected (e.g., "end of this month", "next Friday", "early next year", "January 2027")'
         },
         condition_text: {
           type: 'string',
-          description: 'Specific condition to detect on the page (e.g., "Applications open for 2027 intake")'
+          description: 'Specific condition to detect or trigger on (e.g., "Registration opens", "Tickets go on sale", "Applications open")'
         },
         recipient_email: {
           type: 'string',
-          description: 'Optional email address to notify when open. If omitted, a private 1-click claim_url is returned so the user can bind their notification channel outside the chat.'
+          description:
+            'Optional email address to notify when triggered. If omitted, a private 1-click claim_url is returned so the user can bind their notification channel outside the chat.'
         },
         notify_channels: {
           type: 'array',
@@ -52,7 +82,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
             type: 'string',
             enum: ['in_app', 'email', 'slack', 'discord', 'telegram', 'whatsapp']
           },
-          description: 'Notification channels to alert when open'
+          description: 'Notification channels to alert when triggered'
         }
       },
       required: ['title', 'chat_context']
@@ -61,7 +91,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'extract_watches_from_chat',
     description:
-      'Analyzes a raw AI conversation snippet where a user discusses future scholarships, school applications, or deadlines, automatically extracts all deferred opportunities, and optionally registers watches for them.',
+      'Analyzes a conversation snippet where a user discusses future events, conferences, ticket sales, launches, deadlines, or scholarships, automatically extracts all deferred plans, and schedules reminders/watches for them.',
+    annotations: {
+      title: 'Extract Event & Opportunity Reminders From Chat',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -71,7 +108,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         auto_create: {
           type: 'boolean',
-          description: 'If true, automatically creates active watches for every extracted opportunity'
+          description: 'If true, automatically creates active watches/reminders for every extracted event or opportunity'
         },
         recipient_email: {
           type: 'string',
@@ -83,7 +120,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'list_active_watches',
-    description: 'Lists all scholarships, applications, and web-monitored reminders tracked for the user.',
+    description: 'Lists all upcoming event reminders, ticket/launch watches, and web-monitored opportunities tracked for the user.',
+    annotations: {
+      title: 'List Active Event Reminders & Watches',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -98,7 +142,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'check_watch_now',
     description:
-      'Immediately fetches the target webpage of a tracked watch via the Resolution Engine, evaluates whether applications have opened, and dispatches notifications if open.',
+      'Immediately evaluates a tracked event reminder or scrapes its target webpage via the Resolution Engine to check if registration/tickets/applications are open, and dispatches notifications if triggered.',
+    annotations: {
+      title: 'Check Event Watch Now',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -112,7 +163,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'update_or_cancel_watch',
-    description: 'Updates the target URL, status, or notification settings of an existing watch, or deletes it.',
+    description: 'Updates the status, target URL, or notification settings of an existing event reminder/watch, or deletes it.',
+    annotations: {
+      title: 'Update or Cancel Event Watch',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -138,19 +196,32 @@ export async function executeMcpTool(
 ): Promise<unknown> {
   switch (name) {
     case 'create_opportunity_watch': {
-      const title = String(args.title || 'Untitled Opportunity Watch');
+      const title = String(args.title || 'Untitled Event Reminder');
       const chatContext = String(args.chat_context || 'Created via AI chat tool.');
       const timeframeText = String(args.timeframe_text || args.condition_text || 'end of month');
       const windowInfo = resolveTimeframeWindow(timeframeText);
+      const triggerType = (args.trigger_type as TriggerType) || undefined;
+      const category = args.category ? String(args.category) : inferCategoryFromText(`${title} ${chatContext}`);
+
+      const targetUrl =
+        args.target_url !== undefined
+          ? args.target_url
+            ? String(args.target_url)
+            : null
+          : triggerType === 'scheduled_date'
+            ? null
+            : `${baseUrl}/demo/scholarships/global-ai-fellowship`;
 
       const watch = watchService.createWatch({
         title,
+        category,
         chat_context: chatContext,
         source_chat_client: String(args.source_chat_client || 'MCP AI Assistant'),
-        target_url: args.target_url ? String(args.target_url) : `${baseUrl}/demo/scholarships/global-ai-fellowship`,
+        target_url: targetUrl,
+        trigger_type: triggerType,
         condition_text: args.condition_text
           ? String(args.condition_text)
-          : `Notify when ${title} opens (${windowInfo.window_label})`,
+          : `Notify when ${title} opens or arrives (${windowInfo.window_label})`,
         window_start_date: windowInfo.window_start_date,
         window_label: windowInfo.window_label,
         notify_channels: Array.isArray(args.notify_channels)
@@ -161,7 +232,11 @@ export async function executeMcpTool(
 
       return {
         success: true,
-        message: `Watch created for "${watch.title}" (Window: ${watch.window_label}). We will monitor ${watch.target_url} and notify via [${watch.notify_channels.join(', ')}] as soon as it opens.`,
+        message: `Reminder watch created for "${watch.title}" (Window: ${watch.window_label}). ${
+          watch.target_url ? `Monitoring ${watch.target_url}` : 'Scheduled for target date window'
+        } and will notify via [${watch.notify_channels.join(', ')}] as soon as it triggers.`,
+        claim_url: watch.resolution_config.provider_metadata.claim_url,
+        subscriber_token: watch.resolution_config.provider_metadata.subscriber_token,
         watch
       };
     }

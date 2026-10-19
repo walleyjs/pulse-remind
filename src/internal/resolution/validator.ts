@@ -55,6 +55,19 @@ const GENERIC_STOP_WORDS = new Set([
   'graduate',
   'international',
   'application',
+  'event',
+  'conference',
+  'summit',
+  'festival',
+  'concert',
+  'tickets',
+  'ticket',
+  'registration',
+  'launch',
+  'release',
+  'reminder',
+  'hackathon',
+  'bootcamp',
   'test',
   'demo',
   'watch',
@@ -68,7 +81,7 @@ const GENERIC_STOP_WORDS = new Set([
 
 /**
  * Adapted from Octopus Entity Validation (`espn.rs:1022-1050` & `sports.rs:167-187`).
- * Ensures the scraped webpage actually belongs to the watched scholarship/entity.
+ * Ensures the scraped webpage actually belongs to the watched event, product, or opportunity.
  */
 export function validateEntityMatch(
   watch: WatchRecord,
@@ -99,7 +112,7 @@ export function validateEntityMatch(
 
 /**
  * Strips site-wide boilerplate (<nav>, <header>, <footer>, <aside>, <script>, <style>)
- * so unrelated navbar/footer "Apply Now" buttons never cause false-positive triggers.
+ * so unrelated navbar/footer CTA buttons never cause false-positive triggers.
  */
 export function extractSemanticMainHtml(html: string): string {
   const withoutScripts = html
@@ -108,11 +121,12 @@ export function extractSemanticMainHtml(html: string): string {
     .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
 
-  // Remove semantic boilerplate regions
+  // Remove semantic boilerplate regions & hidden prompt-injection containers
   const withoutBoilerplate = withoutScripts
     .replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ')
     .replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ')
     .replace(/<aside\b[\s\S]*?<\/aside>/gi, ' ')
+    .replace(/<[^>]+style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/gi, ' ')
     .replace(/<header\b[^>]*class=["'][^"']*(?:site-header|global-header|navbar|top-nav)[^"']*["'][^>]*>[\s\S]*?<\/header>/gi, ' ');
 
   return withoutBoilerplate;
@@ -126,12 +140,13 @@ export function stripHtmlToText(html: string): string {
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/\b(?:ignore\s+(?:all\s+)?previous\s+instructions|disregard\s+all\s+prior\s+instructions|system\s+prompt\s*:)/gi, '[FILTERED_PROMPT_INJECTION]')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 /**
- * Extracts a live, non-disabled application CTA URL from the semantic main content.
+ * Extracts a live, non-disabled CTA URL (Apply, Register, Get Tickets, Sign Up, Enroll) from the semantic main content.
  * Rejects disabled links (`aria-disabled="true"`, `disabled`, `class="...disabled..."`, `href="#"`, `javascript:`).
  */
 export function extractApplyUrl(html: string, baseUrl: string): string | null {
@@ -157,6 +172,7 @@ export function extractApplyUrl(html: string, baseUrl: string): string | null {
       /aria-disabled=["']true["']/.test(attrs) ||
       anchorText.includes('closed') ||
       anchorText.includes('not open') ||
+      anchorText.includes('sold out') ||
       anchorText.includes('coming soon')
     ) {
       continue;
@@ -168,7 +184,14 @@ export function extractApplyUrl(html: string, baseUrl: string): string | null {
       anchorText.includes('submit application') ||
       anchorText.includes('application portal') ||
       anchorText.includes('online application') ||
-      href.toLowerCase().includes('/apply')
+      anchorText.includes('register now') ||
+      anchorText.includes('get tickets') ||
+      anchorText.includes('buy tickets') ||
+      anchorText.includes('sign up now') ||
+      anchorText.includes('enroll now') ||
+      href.toLowerCase().includes('/apply') ||
+      href.toLowerCase().includes('/register') ||
+      href.toLowerCase().includes('/tickets')
     ) {
       try {
         return new URL(href, baseUrl).toString();
@@ -182,8 +205,8 @@ export function extractApplyUrl(html: string, baseUrl: string): string | null {
 
 export function extractDeadlineFromText(text: string): string | null {
   const patterns = [
-    /(?:deadline|apply before|closes on|due by|submission deadline)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
-    /(?:deadline|apply before|closes on|due by)\s*[:\-–]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})/i,
+    /(?:deadline|apply before|register before|closes on|due by|submission deadline|ends on)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
+    /(?:deadline|apply before|register before|closes on|due by)\s*[:\-–]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})/i,
     /(?:before|by)\s+([A-Z][a-z]+\s+\d{1,2},?\s+202[6-9])/i
   ];
   for (const pattern of patterns) {
@@ -197,13 +220,13 @@ export function extractDeadlineFromText(text: string): string | null {
 
 export function extractOpeningWindowFromText(text: string): string | null {
   const m = text.match(
-    /(?:will open|opens|opening Window)\s*[:\-–]?\s*((?:End of|Early|Late)?\s*[A-Z][a-z]+\s+202[6-9])/i
+    /(?:will open|opens|goes on sale|opening Window)\s*[:\-–]?\s*((?:End of|Early|Late)?\s*[A-Z][a-z]+\s+202[6-9])/i
   );
   return m && m[1] ? m[1].trim() : null;
 }
 
 const NEGATION_OR_FUTURE_MODALS =
-  /\b(not\s+open|not\s+yet\s+open|no\s+longer\s+open|no\s+longer\s+accepting|not\s+accepting|currently\s+closed|are\s+closed|is\s+closed|have\s+closed|has\s+closed|will\s+open|opens\s+in|opens\s+on|expected\s+to\s+open|once\s+the\s+portal\s+opens|once\s+applications\s+open|when\s+applications\s+open|able\s+to\s+apply\s+online\s+once|will\s+be\s+able\s+to\s+apply)\b/i;
+  /\b(not\s+open|not\s+yet\s+open|not\s+yet\s+on\s+sale|no\s+longer\s+open|no\s+longer\s+accepting|not\s+accepting|currently\s+closed|are\s+closed|is\s+closed|have\s+closed|has\s+closed|will\s+open|opens\s+in|opens\s+on|will\s+go\s+on\s+sale|goes\s+on\s+sale\s+in|expected\s+to\s+open|once\s+the\s+portal\s+opens|once\s+applications\s+open|once\s+registration\s+opens|when\s+applications\s+open|when\s+registration\s+opens|able\s+to\s+apply\s+online\s+once|will\s+be\s+able\s+to\s+apply|will\s+be\s+able\s+to\s+register)\b/i;
 
 export interface AdversarialSignalAnalysis {
   isOpen: boolean;
