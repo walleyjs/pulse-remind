@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { URL } from 'node:url';
+import { config } from '../../config/index.ts';
 import { demoPortalService } from '../../internal/demo/service.ts';
 import { chatExtractorService } from '../../internal/extractor/service.ts';
 import { resolveTimeframeWindow } from '../../internal/extractor/timeframe.ts';
@@ -12,7 +13,7 @@ import { watchService } from '../../internal/watch/service.ts';
 import { initDatabase } from '../db/bootstrap.ts';
 import { cloudDatabaseSync } from '../db/cloud-sync.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
-import { buildOpenApiSpec } from './openapi.ts';
+import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -57,10 +58,60 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      const host = req.headers.host || 'localhost:3456';
-      const baseUrl = `http://${host}`;
+      const host = req.headers.host || `localhost:${config.port}`;
+      const forwardedProto = req.headers['x-forwarded-proto'];
+      const proto =
+        typeof forwardedProto === 'string'
+          ? forwardedProto.split(',')[0].trim()
+          : host.includes('onrender.com')
+            ? 'https'
+            : 'http';
+      const baseUrl = config.cloud.renderExternalUrl
+        ? config.cloud.renderExternalUrl.replace(/\/$/, '')
+        : `${proto}://${host}`;
       const parsedUrl = new URL(req.url || '/', baseUrl);
       const pathname = parsedUrl.pathname;
+
+      // 0. Render Health Check & Anti-Sleep Cron Wake-Up Endpoints
+      if (pathname === '/api/health' && (req.method === 'GET' || req.method === 'HEAD')) {
+        sendJson(res, 200, {
+          status: 'ok',
+          service: 'pulseremind-ai-chat-tools',
+          uptime_seconds: Math.floor(process.uptime()),
+          timestamp: new Date().toISOString(),
+          infrastructure: cloudDatabaseSync.getStatus()
+        });
+        return;
+      }
+
+      if (pathname === '/api/cron/wake' && (req.method === 'GET' || req.method === 'POST')) {
+        if (config.cloud.cronSecret) {
+          const authHeader = req.headers.authorization || '';
+          const querySecret = parsedUrl.searchParams.get('secret') || '';
+          const token = authHeader.replace(/^Bearer\s+/i, '').trim() || querySecret;
+          if (token !== config.cloud.cronSecret) {
+            sendJson(res, 401, { error: 'Unauthorized cron trigger' });
+            return;
+          }
+        }
+
+        const forceAll = parsedUrl.searchParams.get('force') === 'true';
+        const metrics = await resolutionEngine.runCycleWithMetrics(forceAll);
+        sendJson(res, 200, {
+          status: 'awake_and_resolved',
+          triggered_at: new Date().toISOString(),
+          uptime_seconds: Math.floor(process.uptime()),
+          infrastructure: cloudDatabaseSync.getStatus(),
+          cycle_metrics: {
+            total_watches_evaluated: metrics.totalWatchesEvaluated,
+            unique_canonical_targets: metrics.uniqueCanonicalTargets,
+            live_oracle_scrapes: metrics.liveOracleScrapes,
+            cache_hits: metrics.cacheHits,
+            notifications_dispatched: metrics.notificationsDispatched
+          }
+        });
+        return;
+      }
 
       // 1. Simulated External Scholarship Portal Pages
       const demoMatch = pathname.match(/^\/demo\/scholarships\/([a-z0-9\-]+)(\/apply)?$/i);
@@ -88,9 +139,14 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      // 2. OpenAPI Spec for ChatGPT Actions / LLM Tool Calling
+      // 2. OpenAPI Spec for ChatGPT Actions & Gemini Function Declarations
       if (pathname === '/api/openapi.json' && req.method === 'GET') {
         sendJson(res, 200, buildOpenApiSpec(baseUrl));
+        return;
+      }
+
+      if (pathname === '/api/gemini-tools.json' && req.method === 'GET') {
+        sendJson(res, 200, buildGeminiToolsManifest(baseUrl));
         return;
       }
 

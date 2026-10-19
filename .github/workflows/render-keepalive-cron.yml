@@ -1,0 +1,47 @@
+name: CI Tests & Render Anti-Sleep Resolution Cron
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Runs every 14 minutes to prevent Render's 15-minute free-tier spin-down
+    # and trigger due scholarship/opportunity resolution checks.
+    - cron: '*/14 * * * *'
+  workflow_dispatch:
+
+jobs:
+  e2e-tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 23
+        uses: actions/setup-node@v4
+        with:
+          node-version: '23'
+
+      - name: Run E2E & Adversarial Resolution Benchmarks
+        run: npm test
+
+  render-keepalive-and-resolve:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      RENDER_APP_URL: ${{ vars.RENDER_APP_URL || secrets.RENDER_APP_URL || 'https://pulseremind-ai-chat-tools.onrender.com' }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Wake Render Service & Trigger Resolution Engine Cycle
+        run: |
+          echo "Pinging ${RENDER_APP_URL}/api/cron/wake ..."
+          if [ -n "${CRON_SECRET}" ]; then
+            curl -fsSL -X POST "${RENDER_APP_URL}/api/cron/wake" \
+              -H "Authorization: Bearer ${CRON_SECRET}" \
+              -H "Content-Type: application/json"
+          else
+            curl -fsSL -X POST "${RENDER_APP_URL}/api/cron/wake" \
+              -H "Content-Type: application/json"
+          fi

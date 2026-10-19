@@ -11,6 +11,7 @@ export class ResolutionEngine {
   private readonly watchRepo: WatchRepository;
   private readonly notifications: NotificationService;
   private schedulerTimer: ReturnType<typeof setInterval> | null = null;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     watchRepo: WatchRepository = watchRepository,
@@ -309,6 +310,18 @@ export class ResolutionEngine {
     if (this.schedulerTimer.unref) {
       this.schedulerTimer.unref();
     }
+
+    // If running on Render (or any sleep-tier host with RENDER_EXTERNAL_URL / PUBLIC_APP_URL),
+    // self-ping /api/health every 13 minutes so the load balancer sees active traffic before the 15m idle cutoff.
+    if (config.cloud.renderExternalUrl && !this.keepAliveTimer) {
+      const pingUrl = `${config.cloud.renderExternalUrl.replace(/\/$/, '')}/api/health`;
+      this.keepAliveTimer = setInterval(() => {
+        fetch(pingUrl, { headers: { 'User-Agent': 'PulseRemind-KeepAlive/1.0' } }).catch(() => {});
+      }, config.cloud.keepAliveIntervalMs);
+      if (this.keepAliveTimer.unref) {
+        this.keepAliveTimer.unref();
+      }
+    }
   }
 
   startBackgroundScheduler(pollIntervalMs = config.resolution.schedulerIntervalMs): void {
@@ -319,6 +332,10 @@ export class ResolutionEngine {
     if (this.schedulerTimer) {
       clearInterval(this.schedulerTimer);
       this.schedulerTimer = null;
+    }
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
     }
   }
 }

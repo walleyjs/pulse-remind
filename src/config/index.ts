@@ -9,6 +9,9 @@ export interface CloudInfrastructureConfig {
   upstashRedisRestUrl: string | null;
   upstashRedisRestToken: string | null;
   firecrawlApiKey: string | null;
+  renderExternalUrl: string | null;
+  cronSecret: string | null;
+  keepAliveIntervalMs: number;
 }
 
 export interface AppConfig {
@@ -66,7 +69,11 @@ export function loadConfig(): AppConfig {
       tursoAuthToken,
       upstashRedisRestUrl: process.env.UPSTASH_REDIS_REST_URL || null,
       upstashRedisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN || null,
-      firecrawlApiKey: process.env.FIRECRAWL_API_KEY || null
+      firecrawlApiKey: process.env.FIRECRAWL_API_KEY || null,
+      // Render automatically injects RENDER_EXTERNAL_URL (e.g. https://pulseremind.onrender.com)
+      renderExternalUrl: process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || null,
+      cronSecret: process.env.CRON_SECRET || null,
+      keepAliveIntervalMs: Number(process.env.KEEPALIVE_INTERVAL_MS || 13 * 60 * 1000) // 13 mins (< Render's 15m idle sleep)
     }
   };
 }

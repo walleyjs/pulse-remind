@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: pulseremind-ai-chat-tools
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3456
+      - key: PULSEREMIND_DB_PATH
+        value: /tmp/pulseremind.db
+      - key: DEFAULT_RECIPIENT_EMAIL
+        value: student@university.edu
+      - key: KEEPALIVE_INTERVAL_MS
+        value: 780000
+      - key: CRON_SECRET
+        generateValue: true
+      # Optional Third-Party Cloud Providers (set in Render Dashboard -> Environment)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
