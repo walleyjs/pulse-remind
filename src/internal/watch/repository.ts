@@ -267,7 +267,11 @@ export class WatchRepository {
       WHERE id = ?
     `).run(nextEmail, JSON.stringify(nextChannels), JSON.stringify(nextResConfig), watch.id);
 
-    return this.getById(watch.id);
+    const updated = this.getById(watch.id);
+    if (updated) {
+      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
+    }
+    return updated;
   }
 
   addOracleResponse(id: string, record: OracleResponseRecord): void {
@@ -299,7 +303,11 @@ export class WatchRepository {
           last_status_summary = ?
       WHERE id = ?
     `).run(now, reason, id);
-    return this.getById(id);
+    const updated = this.getById(id);
+    if (updated) {
+      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
+    }
+    return updated;
   }
 
   updateEventTiming(id: string, startTime?: string | null, endTimeDeadline?: string | null): void {
@@ -377,7 +385,11 @@ export class WatchRepository {
       params.id
     );
 
-    return this.getById(params.id);
+    const updated = this.getById(params.id);
+    if (updated) {
+      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
+    }
+    return updated;
   }
 
   updateFields(
@@ -428,12 +440,17 @@ export class WatchRepository {
       id
     );
 
-    return this.getById(id);
+    const updated = this.getById(id);
+    if (updated) {
+      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
+    }
+    return updated;
   }
 
   delete(id: string): boolean {
     db.prepare('DELETE FROM check_logs WHERE watch_id = ?').run(id);
     const res = db.prepare('DELETE FROM watches WHERE id = ?').run(id);
+    cloudDatabaseSync.deleteRow('watches', id).catch(() => {});
     return Number(res.changes) > 0;
   }
 
@@ -461,11 +478,13 @@ export class WatchRepository {
       entry.next_poll_after ?? null
     );
 
-    return {
+    const logRecord: CheckLogRecord = {
       id,
       checked_at: checkedAt,
       ...entry
     };
+    cloudDatabaseSync.replicateRow('check_logs', logRecord as unknown as Record<string, unknown>).catch(() => {});
+    return logRecord;
   }
 
   listCheckLogs(watchId?: string, limit = 30): CheckLogRecord[] {

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { config } from '../../config/index.ts';
 
 export interface MinimalPersonalContext {
   sanitizedNote: string;
@@ -49,7 +50,7 @@ const ACTIONABLE_KEYWORDS =
 export class PrivacyMinimizer {
   sanitizeAndDistillContext(
     rawContext: string,
-    baseUrl = 'http://localhost:3456'
+    baseUrl = config.cloud.renderExternalUrl || 'http://localhost:3456'
   ): MinimalPersonalContext {
     let text = (rawContext || '').trim();
     let redactedCount = 0;

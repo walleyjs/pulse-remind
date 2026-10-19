@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db } from '../../pkg/db/sqlite.ts';
+import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
 import type { ChannelConfigRecord, NotificationChannelType, NotificationRecord } from './model.ts';
 
 export class NotificationRepository {
@@ -106,20 +107,29 @@ export class NotificationRepository {
       entry.idempotency_key || null
     );
 
+    const record: NotificationRecord = {
+      id,
+      created_at: createdAt,
+      is_read: false,
+      watch_id: entry.watch_id,
+      watch_title: entry.watch_title,
+      channel: entry.channel,
+      recipient: entry.recipient,
+      subject: entry.subject,
+      message: entry.message,
+      delivery_status: entry.delivery_status,
+      preview_url: entry.preview_url
+    };
+
+    cloudDatabaseSync
+      .replicateRow('notifications', {
+        ...record,
+        idempotency_key: entry.idempotency_key || null
+      })
+      .catch(() => {});
+
     return {
-      record: {
-        id,
-        created_at: createdAt,
-        is_read: false,
-        watch_id: entry.watch_id,
-        watch_title: entry.watch_title,
-        channel: entry.channel,
-        recipient: entry.recipient,
-        subject: entry.subject,
-        message: entry.message,
-        delivery_status: entry.delivery_status,
-        preview_url: entry.preview_url
-      },
+      record,
       created: true
     };
   }

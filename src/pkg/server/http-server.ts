@@ -97,12 +97,14 @@ export function createAppServer(): http.Server {
         }
 
         const forceAll = parsedUrl.searchParams.get('force') === 'true';
+        const cloudSync = await cloudDatabaseSync.syncBidirectional();
         const metrics = await resolutionEngine.runCycleWithMetrics(forceAll);
         sendJson(res, 200, {
           status: 'awake_and_resolved',
           triggered_at: new Date().toISOString(),
           uptime_seconds: Math.floor(process.uptime()),
           infrastructure: cloudDatabaseSync.getStatus(),
+          cloud_sync: cloudSync,
           cycle_metrics: {
             total_watches_evaluated: metrics.totalWatchesEvaluated,
             unique_canonical_targets: metrics.uniqueCanonicalTargets,
@@ -110,6 +112,16 @@ export function createAppServer(): http.Server {
             cache_hits: metrics.cacheHits,
             notifications_dispatched: metrics.notificationsDispatched
           }
+        });
+        return;
+      }
+
+      if (pathname === '/api/cloud/sync' && (req.method === 'GET' || req.method === 'POST')) {
+        const result = await cloudDatabaseSync.syncBidirectional();
+        sendJson(res, 200, {
+          status: result.error ? 'sync_error' : 'synced',
+          sync_result: result,
+          infrastructure: cloudDatabaseSync.getStatus()
         });
         return;
       }
