@@ -12,6 +12,7 @@ import type { NotificationChannelType, WatchRecord } from '../../internal/watch/
 import { watchService } from '../../internal/watch/service.ts';
 import { initDatabase } from '../db/bootstrap.ts';
 import { cloudDatabaseSync } from '../db/cloud-sync.ts';
+import { buildWatchIcsFeed } from '../calendar/ics.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
 
@@ -21,7 +22,8 @@ const MIME_TYPES: Record<string, string> = {
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
-  '.png': 'image/png'
+  '.png': 'image/png',
+  '.ics': 'text/calendar; charset=utf-8'
 };
 
 function sendJson(res: http.ServerResponse, status: number, data: unknown): void {
@@ -41,7 +43,15 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
   }
   const raw = Buffer.concat(chunks).toString('utf-8').trim();
   if (!raw) return {};
-  return JSON.parse(raw);
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    return JSON.parse(raw);
+  }
+  const params = new URLSearchParams(raw);
+  const obj: Record<string, unknown> = {};
+  for (const [k, v] of params.entries()) {
+    obj[k] = v;
+  }
+  return obj;
 }
 
 export function createAppServer(): http.Server {
@@ -209,26 +219,121 @@ export function createAppServer(): http.Server {
       if (pathname === '/oauth/authorize' && req.method === 'GET') {
         const redirectUri = parsedUrl.searchParams.get('redirect_uri');
         const state = parsedUrl.searchParams.get('state') || '';
+        const submittedEmail = (parsedUrl.searchParams.get('email') || '').trim();
+        const skipPrompt = parsedUrl.searchParams.get('skip_prompt') === '1';
+        const savedEmail = notificationService.getSavedDefaultEmail();
+
+        if (submittedEmail && submittedEmail.includes('@')) {
+          notificationService.setSavedDefaultEmail(submittedEmail);
+        }
+
+        const effectiveEmail = submittedEmail || savedEmail || '';
+        const acceptHeader = req.headers.accept || '';
+
+        // If opened interactively in a browser during ChatGPT OAuth setup and no email is bound yet, show 1-step email prompt
+        if (redirectUri && acceptHeader.includes('text/html') && !effectiveEmail && !skipPrompt) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connect PulseRemind to ChatGPT</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 460px; margin: 60px auto; padding: 20px; background: #090d16; color: #f8fafc; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 28px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); }
+    h2 { margin: 0 0 8px; font-size: 20px; }
+    p { font-size: 13px; color: #94a3b8; line-height: 1.5; }
+    input[type="email"] { width: 100%; box-sizing: border-box; padding: 12px 14px; margin-top: 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; font-size: 14px; }
+    button { width: 100%; margin-top: 16px; padding: 12px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg, #10b981, #059669); color: #052e16; font-weight: 700; font-size: 15px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🔔 Connect PulseRemind to ChatGPT</h2>
+    <p>Enter your default alert email once. Every future event, conference, ticket drop, or scholarship reminder you create in ChatGPT will automatically alert this address.</p>
+    <form method="GET" action="/oauth/authorize">
+      <input type="hidden" name="redirect_uri" value="${redirectUri.replace(/"/g, '&quot;')}" />
+      <input type="hidden" name="state" value="${state.replace(/"/g, '&quot;')}" />
+      <input type="email" name="email" placeholder="you@example.com" required autofocus />
+      <button type="submit">Authorize & Save Alert Email &rarr;</button>
+    </form>
+  </div>
+</body>
+</html>`);
+          return;
+        }
+
+        const codeSuffix = effectiveEmail
+          ? Buffer.from(effectiveEmail, 'utf-8').toString('base64url')
+          : 'live';
+        const authCode = `prm_oauth_code_${codeSuffix}`;
+
         if (redirectUri) {
           const target = new URL(redirectUri);
-          target.searchParams.set('code', 'prm_oauth_code_live');
+          target.searchParams.set('code', authCode);
           if (state) target.searchParams.set('state', state);
           res.writeHead(302, { Location: target.toString() });
           res.end();
           return;
         }
-        sendJson(res, 200, { code: 'prm_oauth_code_live', state });
+        sendJson(res, 200, { code: authCode, state });
         return;
       }
 
       if (pathname === '/oauth/token' && req.method === 'POST') {
+        const body = await readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+        const codeStr = typeof body.code === 'string' ? body.code : '';
+        let tokenSuffix = 'live';
+        if (codeStr.startsWith('prm_oauth_code_') && codeStr !== 'prm_oauth_code_live') {
+          tokenSuffix = codeStr.replace('prm_oauth_code_', '');
+          try {
+            const decodedEmail = Buffer.from(tokenSuffix, 'base64url').toString('utf-8');
+            if (decodedEmail.includes('@')) {
+              notificationService.setSavedDefaultEmail(decodedEmail);
+            }
+          } catch {
+            // ignore malformed suffix
+          }
+        }
         sendJson(res, 200, {
-          access_token: 'prm_live_access_token',
+          access_token: `prm_live_token_${tokenSuffix}`,
           token_type: 'Bearer',
           expires_in: 86400 * 30,
-          refresh_token: 'prm_live_refresh_token',
+          refresh_token: `prm_live_refresh_${tokenSuffix}`,
           scope: 'mcp:tools'
         });
+        return;
+      }
+
+      // RFC 5545 Calendar (.ics) Endpoints for 1-click Google/Apple/Outlook Calendar Alarms
+      const watchIcsMatch = pathname.match(/^\/api\/watches\/([^/]+)\/calendar\.ics$/i);
+      if (watchIcsMatch && req.method === 'GET') {
+        const watchId = decodeURIComponent(watchIcsMatch[1]);
+        const watch = watchService.getWatchById(watchId);
+        if (!watch) {
+          sendJson(res, 404, { error: 'Watch not found' });
+          return;
+        }
+        const icsContent = buildWatchIcsFeed([watch], baseUrl);
+        res.writeHead(200, {
+          'Content-Type': 'text/calendar; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${watch.id}.ics"`,
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(icsContent);
+        return;
+      }
+
+      if (pathname === '/api/calendar/all.ics' && req.method === 'GET') {
+        const watches = watchService.listWatches();
+        const icsContent = buildWatchIcsFeed(watches, baseUrl);
+        res.writeHead(200, {
+          'Content-Type': 'text/calendar; charset=utf-8',
+          'Content-Disposition': 'inline; filename="pulseremind-alerts.ics"',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(icsContent);
         return;
       }
 
@@ -237,7 +342,7 @@ export function createAppServer(): http.Server {
           name: 'pulseremind',
           version: '1.0.0',
           description:
-            'Captures future-dated scholarships, fellowships, and admissions mentioned in AI chats, monitors their web pages, and notifies users when applications open.',
+            'Captures future-dated events, conferences, ticket sales, launches, and scholarships mentioned in AI chats, monitors web pages or scheduled dates, and notifies users.',
           icon: `${baseUrl}/pulseremind-icon-256.png`,
           skills: './skills',
           mcp: {
@@ -267,6 +372,10 @@ export function createAppServer(): http.Server {
       }
 
       if (pathname === '/mcp' && req.method === 'GET') {
+        const queryEmail = (parsedUrl.searchParams.get('email') || '').trim();
+        if (queryEmail && queryEmail.includes('@')) {
+          notificationService.setSavedDefaultEmail(queryEmail);
+        }
         const accept = req.headers.accept || '';
         if (accept.includes('text/event-stream')) {
           res.writeHead(200, {
@@ -300,6 +409,18 @@ export function createAppServer(): http.Server {
         const id = (body.id as string | number | null) ?? null;
         const method = String(body.method || '');
         const params = (body.params as Record<string, unknown>) || {};
+
+        // Resolve user email from OAuth Bearer token or ?email= query param on /mcp
+        let oauthEmail: string | null = (parsedUrl.searchParams.get('email') || '').trim() || null;
+        const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+        if (!oauthEmail && authHeader.startsWith('prm_live_token_') && authHeader !== 'prm_live_token_live') {
+          try {
+            const decoded = Buffer.from(authHeader.replace('prm_live_token_', ''), 'base64url').toString('utf-8');
+            if (decoded.includes('@')) oauthEmail = decoded;
+          } catch {
+            // ignore
+          }
+        }
 
         if (method === 'initialize') {
           const requestedProtocol =
@@ -339,7 +460,7 @@ export function createAppServer(): http.Server {
         if (method === 'tools/call') {
           const toolName = String(params.name || '');
           const toolArgs = (params.arguments as Record<string, unknown>) || {};
-          const output = await executeMcpTool(toolName, toolArgs, baseUrl);
+          const output = await executeMcpTool(toolName, toolArgs, baseUrl, oauthEmail);
           sendJson(res, 200, {
             jsonrpc: '2.0',
             id,

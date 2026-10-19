@@ -1,0 +1,17 @@
+{
+  "name": "PulseRemind — AI Chat Event & Web-State Reminder",
+  "short_name": "PulseRemind",
+  "description": "Privacy-first AI chat reminder and web-state monitor for upcoming events, conferences, tickets, launches, and scholarships.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/pulseremind-icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

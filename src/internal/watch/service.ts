@@ -63,6 +63,16 @@ export class WatchService {
   ): WatchRecord | null {
     return this.repo.claimSubscriberToken(token, params);
   }
+
+  bindNotificationDestination(params: {
+    recipient_email: string;
+    watch_id?: string;
+    notify_channels?: WatchRecord['notify_channels'];
+    ntfy_topic?: string;
+    save_as_default?: boolean;
+  }): WatchRecord[] {
+    return this.repo.bindNotificationDestination(params);
+  }
 }
 
 export const watchService = new WatchService();

@@ -206,7 +206,8 @@ test('4. MCP stdio server responds to JSON-RPC 2.0 initialize and tools/list ove
   assert.equal(responses[0].id, 1);
   assert.equal(responses[1].id, 2);
   const tools = (responses[1].result as { tools: Array<{ name: string }> }).tools;
-  assert.equal(tools.length, 5);
+  assert.equal(tools.length, 6);
+  assert.ok(tools.some((t) => t.name === 'set_notification_destination'));
 });
 
 test('5. Server composition root initializes HTTP server and starts/stops background scheduler cleanly', async () => {
@@ -485,5 +486,90 @@ test('10. General Event, Conference, Ticket Drop & Pure Scheduled-Date Reminder 
     'Should classify extracted items as conference or tickets'
   );
 });
+
+test('11. Seamless Ask-Once In-Chat Email Binding (set_notification_destination) & RFC 5545 .ics Calendar Feed', async () => {
+  const { buildWatchIcsFeed } = await import('../src/pkg/calendar/ics.ts');
+
+  // Reset saved default email so we simulate a brand-new user in ChatGPT ("No Auth" mode)
+  notificationService.setSavedDefaultEmail('');
+
+  // Turn 1: User asks ChatGPT to set a reminder without mentioning their email
+  const turn1Res = (await executeMcpTool('create_opportunity_watch', {
+    title: 'Swedish Institute Scholarship for Global Professionals 2027–2028',
+    category: 'scholarship',
+    trigger_type: 'web_monitor',
+    target_url: 'https://si.se/en/apply/scholarships/',
+    timeframe_text: 'Spring 2027',
+    chat_context: 'Confirm eligibility and submit master’s scholarship application.'
+  })) as {
+    success: boolean;
+    delivery_status: string;
+    bound_email: string | null;
+    assistant_instruction: string;
+    calendar_links: { google_calendar_url: string; ics_download_url: string };
+    watch: { id: string; recipient_email: string | null };
+  };
+
+  assert.equal(turn1Res.success, true);
+  assert.equal(
+    turn1Res.delivery_status,
+    'ACTION_REQUIRED_ASK_USER_FOR_EMAIL',
+    'Must prompt the LLM to ask for the user email instead of silently using student@university.edu'
+  );
+  assert.equal(turn1Res.bound_email, null);
+  assert.equal(turn1Res.watch.recipient_email, null);
+  assert.ok(turn1Res.calendar_links.google_calendar_url.includes('calendar.google.com/calendar/render'));
+  assert.ok(turn1Res.calendar_links.ics_download_url.endsWith(`/api/watches/${turn1Res.watch.id}/calendar.ics`));
+
+  // Turn 2: User replies with their email in chat -> LLM calls set_notification_destination
+  const turn2Res = (await executeMcpTool('set_notification_destination', {
+    recipient_email: 'walley@pulseremind.ai',
+    watch_id: turn1Res.watch.id,
+    save_as_default: true
+  })) as {
+    success: boolean;
+    delivery_status: string;
+    bound_email: string;
+    saved_as_default_for_future_chats: boolean;
+    updated_watches_count: number;
+  };
+
+  assert.equal(turn2Res.success, true);
+  assert.equal(turn2Res.delivery_status, 'BOUND_READY');
+  assert.equal(turn2Res.bound_email, 'walley@pulseremind.ai');
+  assert.equal(turn2Res.saved_as_default_for_future_chats, true);
+  assert.ok(turn2Res.updated_watches_count >= 1);
+
+  // Verify the Turn 1 watch now has the user's real email bound in the DB
+  const updatedWatch = watchService.getWatchById(turn1Res.watch.id)!;
+  assert.equal(updatedWatch.recipient_email, 'walley@pulseremind.ai');
+
+  // Turn 3 (Future chat): User creates another reminder WITHOUT specifying an email -> auto-binds!
+  const turn3Res = (await executeMcpTool('create_opportunity_watch', {
+    title: 'Stripe Sessions 2027 Early-Bird Tickets',
+    category: 'tickets',
+    trigger_type: 'web_monitor',
+    timeframe_text: 'next month',
+    chat_context: 'Buy 1 developer pass.'
+  })) as {
+    delivery_status: string;
+    bound_email: string | null;
+  };
+
+  assert.equal(
+    turn3Res.delivery_status,
+    'BOUND_READY',
+    'Future reminders must automatically bind the saved default email in 0 extra turns'
+  );
+  assert.equal(turn3Res.bound_email, 'walley@pulseremind.ai');
+
+  // Verify RFC 5545 .ics calendar generation
+  const icsText = buildWatchIcsFeed([updatedWatch], 'https://pulse-remind.onrender.com');
+  assert.ok(icsText.includes('BEGIN:VCALENDAR'));
+  assert.ok(icsText.includes('BEGIN:VEVENT'));
+  assert.ok(icsText.includes('BEGIN:VALARM'));
+  assert.ok(icsText.includes('Swedish Institute Scholarship'));
+});
+
 
 

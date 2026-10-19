@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from '../../pkg/db/sqlite.ts';
 import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
+import { notificationRepository } from '../notification/repository.ts';
 import type {
   CheckLogRecord,
   CreateWatchInput,
@@ -164,6 +165,12 @@ export class WatchRepository {
         ? `Pre-window hibernation active (poll_after set for ${input.window_label || input.window_start_date})`
         : 'Ready for Resolution Engine check...';
 
+    const explicitEmail =
+      input.recipient_email && input.recipient_email.trim() && input.recipient_email.trim() !== 'student@university.edu'
+        ? input.recipient_email.trim()
+        : null;
+    const resolvedEmail = explicitEmail || notificationRepository.getSavedDefaultEmail() || null;
+
     db.prepare(`
       INSERT INTO watches (
         id, title, category, chat_context, source_chat_client, target_url, secondary_url,
@@ -191,7 +198,7 @@ export class WatchRepository {
       JSON.stringify(resConfig),
       status,
       JSON.stringify(input.notify_channels || ['in_app', 'email']),
-      input.recipient_email || process.env.DEFAULT_RECIPIENT_EMAIL || 'student@university.edu',
+      resolvedEmail,
       initialSummary,
       now
     );
@@ -250,6 +257,10 @@ export class WatchRepository {
     const watch = this.findBySubscriberToken(token);
     if (!watch) return null;
 
+    if (params.recipient_email && params.recipient_email.trim()) {
+      notificationRepository.setSavedDefaultEmail(params.recipient_email.trim());
+    }
+
     const nextChannels =
       params.notify_channels && params.notify_channels.length > 0
         ? params.notify_channels
@@ -277,6 +288,72 @@ export class WatchRepository {
       cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
     }
     return updated;
+  }
+
+  bindNotificationDestination(params: {
+    recipient_email: string;
+    watch_id?: string;
+    notify_channels?: NotificationChannelType[];
+    ntfy_topic?: string;
+    save_as_default?: boolean;
+  }): WatchRecord[] {
+    const cleanEmail = params.recipient_email.trim();
+    if (params.save_as_default !== false && cleanEmail) {
+      notificationRepository.setSavedDefaultEmail(cleanEmail);
+    }
+
+    const targetIds = new Set<string>();
+    if (params.watch_id) {
+      targetIds.add(params.watch_id);
+    }
+
+    // Also bind any currently unbound watches (or most recent watch if watch_id omitted)
+    const allWatches = this.list();
+    for (const w of allWatches) {
+      if (!w.recipient_email || w.recipient_email === 'student@university.edu') {
+        targetIds.add(w.id);
+      }
+    }
+    if (targetIds.size === 0 && allWatches.length > 0) {
+      targetIds.add(allWatches[0].id);
+    }
+
+    const updatedWatches: WatchRecord[] = [];
+    for (const id of targetIds) {
+      const watch = this.getById(id);
+      if (!watch) continue;
+      const mergedChannels = Array.from(
+        new Set<NotificationChannelType>([
+          ...(params.notify_channels || watch.notify_channels),
+          'in_app',
+          'email'
+        ])
+      );
+      const nextResConfig = {
+        ...watch.resolution_config,
+        provider_metadata: {
+          ...watch.resolution_config.provider_metadata,
+          ...(params.ntfy_topic ? { ntfy_topic: params.ntfy_topic.trim() } : {}),
+          claimed_at: new Date().toISOString()
+        }
+      };
+
+      db.prepare(`
+        UPDATE watches
+        SET recipient_email = ?,
+            notify_channels = ?,
+            resolution_config = ?
+        WHERE id = ?
+      `).run(cleanEmail, JSON.stringify(mergedChannels), JSON.stringify(nextResConfig), id);
+
+      const updated = this.getById(id);
+      if (updated) {
+        updatedWatches.push(updated);
+        cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
+      }
+    }
+
+    return updatedWatches;
   }
 
   addOracleResponse(id: string, record: OracleResponseRecord): void {

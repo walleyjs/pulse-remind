@@ -41,6 +41,14 @@ export class NotificationService {
     return this.repo.updateChannelConfig(channel, enabled, config);
   }
 
+  getSavedDefaultEmail(): string | null {
+    return this.repo.getSavedDefaultEmail();
+  }
+
+  setSavedDefaultEmail(email: string): ChannelConfigRecord {
+    return this.repo.setSavedDefaultEmail(email);
+  }
+
   getRenderedEmailHtml(notificationId: string): string | null {
     return this.email.getRenderedHtml(notificationId);
   }

@@ -20,7 +20,7 @@ export class NotificationRepository {
         channel: 'email',
         enabled: 1,
         config: {
-          default_recipient: 'student@university.edu',
+          default_recipient: process.env.DEFAULT_RECIPIENT_EMAIL || '',
           smtp_host: '',
           smtp_port: '587',
           smtp_user: '',
@@ -185,6 +185,37 @@ export class NotificationRepository {
 
     return this.getChannelConfigs().find((c) => c.channel === channel)!;
   }
+
+  getSavedDefaultEmail(): string | null {
+    const envEmail = (process.env.DEFAULT_RECIPIENT_EMAIL || '').trim();
+    if (envEmail && envEmail !== 'student@university.edu') {
+      return envEmail;
+    }
+    const emailCfg = this.getChannelConfigs().find((c) => c.channel === 'email');
+    const saved = (emailCfg?.config?.default_recipient || '').trim();
+    if (saved && saved !== 'student@university.edu') {
+      return saved;
+    }
+    return null;
+  }
+
+  setSavedDefaultEmail(email: string): ChannelConfigRecord {
+    const cleanEmail = email.trim();
+    const existing = this.getChannelConfigs().find((c) => c.channel === 'email');
+    const currentConfig = existing?.config || {
+      default_recipient: '',
+      smtp_host: '',
+      smtp_port: '587',
+      smtp_user: '',
+      smtp_pass: '',
+      from_email: 'alerts@pulseremind.ai'
+    };
+    return this.updateChannelConfig('email', true, {
+      ...currentConfig,
+      default_recipient: cleanEmail
+    });
+  }
 }
+
 
 export const notificationRepository = new NotificationRepository();

@@ -226,7 +226,7 @@ export class ChatExtractorService {
       window_start_date: extracted.window_start_date,
       window_label: extracted.window_label,
       notify_channels: ['in_app', 'email'],
-      recipient_email: recipientEmail || 'student@university.edu'
+      recipient_email: recipientEmail || undefined
     };
   }
 }
