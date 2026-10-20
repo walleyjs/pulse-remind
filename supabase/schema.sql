@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS public.channel_configs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Disable Row Level Security so PostgREST sync works with publishable or service role keys
+ALTER TABLE public.watches DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.check_logs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.channel_configs DISABLE ROW LEVEL SECURITY;
+
 -- Grant PostgREST roles read & write permissions
 GRANT ALL ON TABLE public.watches TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.check_logs TO postgres, anon, authenticated, service_role;
