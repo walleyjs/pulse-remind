@@ -71,8 +71,24 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   preview_url TEXT,
   idempotency_key TEXT UNIQUE,
   is_read BOOLEAN NOT NULL DEFAULT false,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  next_retry_at BIGINT,
+  last_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS public.channel_configs (
+  channel TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Grant PostgREST roles read & write permissions
+GRANT ALL ON TABLE public.watches TO postgres, anon, authenticated, service_role;
+GRANT ALL ON TABLE public.check_logs TO postgres, anon, authenticated, service_role;
+GRANT ALL ON TABLE public.notifications TO postgres, anon, authenticated, service_role;
+GRANT ALL ON TABLE public.channel_configs TO postgres, anon, authenticated, service_role;
 
 -- Reload PostgREST schema cache immediately so /rest/v1/watches is live
 NOTIFY pgrst, 'reload schema';
