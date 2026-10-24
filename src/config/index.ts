@@ -25,11 +25,9 @@ function loadDotEnvIfPresent(): void {
 }
 
 export interface CloudInfrastructureConfig {
-  storageProvider: 'sqlite' | 'supabase' | 'turso';
+  storageProvider: 'sqlite' | 'supabase';
   supabaseUrl: string | null;
   supabaseKey: string | null;
-  tursoUrl: string | null;
-  tursoAuthToken: string | null;
   upstashRedisRestUrl: string | null;
   upstashRedisRestToken: string | null;
   firecrawlApiKey: string | null;
@@ -60,16 +58,11 @@ export function loadConfig(): AppConfig {
 
   const supabaseUrl = process.env.SUPABASE_URL || null;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || null;
-  const tursoUrl = process.env.TURSO_DATABASE_URL || null;
-  const tursoAuthToken = process.env.TURSO_AUTH_TOKEN || null;
 
-  let storageProvider: 'sqlite' | 'supabase' | 'turso' = 'sqlite';
+  // Enforce: In non-memory test mode, storageProvider is strictly locked to 'supabase'
+  let storageProvider: 'sqlite' | 'supabase' = 'sqlite';
   if (process.env.PULSEREMIND_DB_PATH !== ':memory:') {
-    if (process.env.STORAGE_PROVIDER === 'supabase' || (supabaseUrl && supabaseKey)) {
-      storageProvider = 'supabase';
-    } else if (process.env.STORAGE_PROVIDER === 'turso' || (tursoUrl && tursoAuthToken)) {
-      storageProvider = 'turso';
-    }
+    storageProvider = 'supabase';
   }
 
   return {
@@ -93,8 +86,6 @@ export function loadConfig(): AppConfig {
       storageProvider,
       supabaseUrl,
       supabaseKey,
-      tursoUrl,
-      tursoAuthToken,
       upstashRedisRestUrl: process.env.UPSTASH_REDIS_REST_URL || null,
       upstashRedisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN || null,
       firecrawlApiKey: process.env.FIRECRAWL_API_KEY || null,

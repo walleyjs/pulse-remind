@@ -115,7 +115,7 @@ function sanitizeForSupabase(table: string, row: Record<string, unknown>): Recor
 
 export interface InfrastructureStatus {
   mode: 'local_embedded' | 'cloud_hybrid';
-  primaryDatabase: 'node:sqlite' | 'supabase_postgres' | 'turso_libsql';
+  primaryDatabase: 'node:sqlite' | 'supabase_postgres';
   cacheBackend: 'in_memory_l1' | 'upstash_redis_l2';
   headlessScraper: 'native_fetch' | 'firecrawl_headless';
   lastSyncedAt: string | null;
@@ -126,9 +126,9 @@ export interface InfrastructureStatus {
 /**
  * Dual-Mode Cloud Sync Adapter:
  * - Locally & in CI tests (`PULSEREMIND_DB_PATH=:memory:`), uses zero-setup built-in `node:sqlite`.
- * - In Cloud Production (`SUPABASE_URL` or `TURSO_DATABASE_URL` configured):
+ * - In Cloud Production (`SUPABASE_URL` configured):
  *   1. Hydrates local SQLite from Supabase on boot so watches survive Render container restarts.
- *   2. Replicates all write/update/delete mutations to Supabase PostgREST or Turso HTTP pipeline.
+ *   2. Replicates all write/update/delete mutations to Supabase PostgREST.
  *   3. Tracks `lastSyncedAt` and `lastSyncError` for instant diagnostics on `/api/health`.
  */
 export class CloudDatabaseSync {
@@ -146,9 +146,7 @@ export class CloudDatabaseSync {
       primaryDatabase:
         config.cloud.storageProvider === 'supabase'
           ? 'supabase_postgres'
-          : config.cloud.storageProvider === 'turso'
-            ? 'turso_libsql'
-            : 'node:sqlite',
+          : 'node:sqlite',
       cacheBackend: isRedis ? 'upstash_redis_l2' : 'in_memory_l1',
       headlessScraper: isFirecrawl ? 'firecrawl_headless' : 'native_fetch',
       lastSyncedAt: this.lastSyncedAt,
@@ -164,10 +162,29 @@ export class CloudDatabaseSync {
     if (config.cloud.storageProvider === 'supabase' && config.cloud.supabaseUrl && config.cloud.supabaseKey) {
       return true;
     }
-    if (config.cloud.storageProvider === 'turso' && config.cloud.tursoUrl && config.cloud.tursoAuthToken) {
-      return true;
-    }
     return false;
+  }
+
+  async verifySupabaseConnection(): Promise<{ ok: boolean; error: string | null }> {
+    if (!config.cloud.supabaseUrl || !config.cloud.supabaseKey) {
+      return { ok: false, error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' };
+    }
+    try {
+      const res = await fetch(`${config.cloud.supabaseUrl.replace(/\/$/, '')}/rest/v1/watches?select=id&limit=1`, {
+        method: 'GET',
+        headers: {
+          apikey: config.cloud.supabaseKey,
+          Authorization: `Bearer ${config.cloud.supabaseKey}`
+        }
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText);
+        return { ok: false, error: `Supabase HTTP ${res.status}: ${text}` };
+      }
+      return { ok: true, error: null };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
   }
 
   async replicateRow(table: string, payload: Record<string, unknown> | Array<Record<string, unknown>>): Promise<boolean> {
@@ -199,50 +216,6 @@ export class CloudDatabaseSync {
         this.lastSyncedAt = new Date().toISOString();
         this.lastSyncError = null;
         this.syncedRowsCount += Array.isArray(payload) ? payload.length : 1;
-        return true;
-      } catch (err) {
-        this.lastSyncError = (err as Error).message;
-        return false;
-      }
-    }
-
-    if (config.cloud.storageProvider === 'turso' && config.cloud.tursoUrl && config.cloud.tursoAuthToken) {
-      const rows = Array.isArray(payload) ? payload : [payload];
-      try {
-        const requests = rows.map((row) => {
-          const cols = Object.keys(row);
-          const placeholders = cols.map(() => '?').join(', ');
-          const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`;
-          const args = cols.map((k) => ({
-            type: typeof row[k] === 'number' ? 'integer' : 'text',
-            value:
-              row[k] === null || row[k] === undefined
-                ? null
-                : typeof row[k] === 'object'
-                  ? JSON.stringify(row[k])
-                  : String(row[k])
-          }));
-          return { type: 'execute', stmt: { sql, args } };
-        });
-
-        const res = await fetch(`${config.cloud.tursoUrl.replace(/\/$/, '')}/v2/pipeline`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${config.cloud.tursoAuthToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            requests: [...requests, { type: 'close' }]
-          })
-        });
-        if (!res.ok) {
-          const errText = await res.text().catch(() => res.statusText);
-          this.lastSyncError = `Turso ${table} HTTP ${res.status}: ${errText.slice(0, 220)}`;
-          return false;
-        }
-        this.lastSyncedAt = new Date().toISOString();
-        this.lastSyncError = null;
-        this.syncedRowsCount += rows.length;
         return true;
       } catch (err) {
         this.lastSyncError = (err as Error).message;

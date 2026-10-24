@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS public.watches (
   target_url TEXT,
   secondary_url TEXT,
   canonical_url_key TEXT,
+  rrule TEXT,
   trigger_type TEXT NOT NULL DEFAULT 'web_monitor',
   condition_text TEXT NOT NULL,
   expected_keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -132,6 +133,15 @@ GRANT ALL ON TABLE public.check_logs TO postgres, anon, authenticated, service_r
 GRANT ALL ON TABLE public.notifications TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.channel_configs TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.outbox TO postgres, anon, authenticated, service_role;
+
+-- Safe column migrations for pre-existing tables
+ALTER TABLE public.watches ADD COLUMN IF NOT EXISTS rrule TEXT;
+ALTER TABLE public.watches ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'tenant_default';
+ALTER TABLE public.watches ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE public.watches ADD COLUMN IF NOT EXISTS canonical_url_key TEXT;
+ALTER TABLE public.check_logs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'tenant_default';
+ALTER TABLE public.notifications ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'tenant_default';
+ALTER TABLE public.notifications ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
 
 -- Reload PostgREST schema cache immediately so /rest/v1/watches is live
 NOTIFY pgrst, 'reload schema';
