@@ -114,8 +114,7 @@ export class PrivacyMinimizer {
 
 export const DISALLOWED_AMBIENT_EMAILS = new Set([
   'student@university.edu',
-  'developer@example.com',
-  'user@example.com'
+  'developer@example.com'
 ]);
 
 export function isDisallowedAmbientEmail(email: string | null | undefined): boolean {

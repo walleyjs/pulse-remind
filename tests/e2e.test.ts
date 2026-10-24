@@ -2185,16 +2185,16 @@ test('27. Neutral Tool Response Payloads & Zero-Hallucination Cold-Start', async
     'Must strictly reject student@university.edu placeholder email'
   );
 
-  // 27c. Legitimate user email binds cleanly
+  // 27c. Legitimate user email (e.g. user@example.com) binds cleanly
   const legitBinding = (await executeMcpTool('set_notification_destination', {
-    recipient_email: 'real.user@company.com',
+    recipient_email: 'user@example.com',
     watch_id: coldWatchRes.watch_id,
     save_as_default: false
   })) as Record<string, any>;
 
   assert.equal(legitBinding.success, true);
   assert.equal(legitBinding.destination_status, 'bound');
-  assert.equal(legitBinding.bound_email, 'real.user@company.com');
+  assert.equal(legitBinding.bound_email, 'user@example.com');
   assert.equal(legitBinding.assistant_instruction, undefined);
 
   // Clean up
