@@ -1,4 +1,28 @@
 import path from 'node:path';
+import fs from 'node:fs';
+
+function loadDotEnvIfPresent(): void {
+  try {
+    const envPath = path.join(process.cwd(), '.env');
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf-8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx !== -1) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          const val = trimmed.slice(eqIdx + 1).trim();
+          if (!process.env[key] && val) {
+            process.env[key] = val;
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore in read-only / custom environments
+  }
+}
 
 export interface CloudInfrastructureConfig {
   storageProvider: 'sqlite' | 'supabase' | 'turso';
@@ -32,16 +56,20 @@ export interface AppConfig {
 }
 
 export function loadConfig(): AppConfig {
+  loadDotEnvIfPresent();
+
   const supabaseUrl = process.env.SUPABASE_URL || null;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || null;
   const tursoUrl = process.env.TURSO_DATABASE_URL || null;
   const tursoAuthToken = process.env.TURSO_AUTH_TOKEN || null;
 
   let storageProvider: 'sqlite' | 'supabase' | 'turso' = 'sqlite';
-  if (process.env.STORAGE_PROVIDER === 'supabase' || (supabaseUrl && supabaseKey)) {
-    storageProvider = 'supabase';
-  } else if (process.env.STORAGE_PROVIDER === 'turso' || (tursoUrl && tursoAuthToken)) {
-    storageProvider = 'turso';
+  if (process.env.PULSEREMIND_DB_PATH !== ':memory:') {
+    if (process.env.STORAGE_PROVIDER === 'supabase' || (supabaseUrl && supabaseKey)) {
+      storageProvider = 'supabase';
+    } else if (process.env.STORAGE_PROVIDER === 'turso' || (tursoUrl && tursoAuthToken)) {
+      storageProvider = 'turso';
+    }
   }
 
   return {

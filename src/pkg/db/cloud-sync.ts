@@ -1,6 +1,117 @@
 import { config } from '../../config/index.ts';
 import { oracleCache } from '../cache/oracle-cache.ts';
 import { db } from './sqlite.ts';
+import { DEFAULT_TENANT_ID, deriveCanonicalTenantId } from '../tenant/tenant.ts';
+
+const SUPABASE_WATCH_COLUMNS = new Set([
+  'id',
+  'title',
+  'category',
+  'chat_context',
+  'source_chat_client',
+  'target_url',
+  'secondary_url',
+  'canonical_url_key',
+  'trigger_type',
+  'condition_text',
+  'expected_keywords',
+  'closed_keywords',
+  'window_start_date',
+  'window_label',
+  'check_interval_minutes',
+  'poll_after',
+  'is_auto_resolve',
+  'proposed_outcome',
+  'closing_soon_notified',
+  'resolution_config',
+  'oracle_responses',
+  'status',
+  'notify_channels',
+  'recipient_email',
+  'last_checked_at',
+  'last_snapshot_hash',
+  'last_status_summary',
+  'detected_deadline',
+  'detected_apply_url',
+  'triggered_at',
+  'created_at'
+]);
+
+const SUPABASE_CHECK_LOG_COLUMNS = new Set([
+  'id',
+  'watch_id',
+  'checked_at',
+  'http_status',
+  'is_open',
+  'confidence',
+  'summary',
+  'extracted_snippet',
+  'page_changed',
+  'oracle_name',
+  'cache_hit',
+  'entity_validated',
+  'next_poll_after'
+]);
+
+const SUPABASE_NOTIFICATION_COLUMNS = new Set([
+  'id',
+  'watch_id',
+  'watch_title',
+  'channel',
+  'recipient',
+  'subject',
+  'message',
+  'delivery_status',
+  'preview_url',
+  'idempotency_key',
+  'is_read',
+  'attempt_count',
+  'next_retry_at',
+  'last_error',
+  'created_at'
+]);
+
+function sanitizeForSupabase(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  const allowed =
+    table === 'watches'
+      ? SUPABASE_WATCH_COLUMNS
+      : table === 'check_logs'
+        ? SUPABASE_CHECK_LOG_COLUMNS
+        : table === 'notifications'
+          ? SUPABASE_NOTIFICATION_COLUMNS
+          : null;
+
+  if (!allowed) return row;
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (allowed.has(key)) {
+      sanitized[key] = value;
+    }
+  }
+
+  if (table === 'watches') {
+    const resConfig =
+      typeof sanitized.resolution_config === 'object' && sanitized.resolution_config !== null
+        ? { ...(sanitized.resolution_config as Record<string, unknown>) }
+        : typeof sanitized.resolution_config === 'string'
+          ? JSON.parse(sanitized.resolution_config)
+          : {};
+
+    const meta = { ...((resConfig.provider_metadata as Record<string, unknown>) || {}) };
+    if (row.tenant_id && !meta.tenant_id) meta.tenant_id = row.tenant_id;
+    if (row.rrule && !meta.rrule) meta.rrule = row.rrule;
+    if (row.version !== undefined && meta.version === undefined) meta.version = row.version;
+    resConfig.provider_metadata = meta;
+    sanitized.resolution_config = resConfig;
+
+    if (!sanitized.condition_text) {
+      sanitized.condition_text = String(row.title || 'Event status monitor');
+    }
+  }
+
+  return sanitized;
+}
 
 export interface InfrastructureStatus {
   mode: 'local_embedded' | 'cloud_hybrid';
@@ -47,6 +158,9 @@ export class CloudDatabaseSync {
   }
 
   isCloudConfigured(): boolean {
+    if (process.env.PULSEREMIND_DB_PATH === ':memory:') {
+      return false;
+    }
     if (config.cloud.storageProvider === 'supabase' && config.cloud.supabaseUrl && config.cloud.supabaseKey) {
       return true;
     }
@@ -57,8 +171,16 @@ export class CloudDatabaseSync {
   }
 
   async replicateRow(table: string, payload: Record<string, unknown> | Array<Record<string, unknown>>): Promise<boolean> {
+    if (process.env.PULSEREMIND_DB_PATH === ':memory:') {
+      return true;
+    }
+
     if (config.cloud.storageProvider === 'supabase' && config.cloud.supabaseUrl && config.cloud.supabaseKey) {
       try {
+        const bodyPayload = Array.isArray(payload)
+          ? payload.map((r) => sanitizeForSupabase(table, r))
+          : sanitizeForSupabase(table, payload);
+
         const res = await fetch(`${config.cloud.supabaseUrl.replace(/\/$/, '')}/rest/v1/${table}`, {
           method: 'POST',
           headers: {
@@ -67,7 +189,7 @@ export class CloudDatabaseSync {
             'Content-Type': 'application/json',
             Prefer: 'resolution=merge-duplicates'
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(bodyPayload)
         });
         if (!res.ok) {
           const errText = await res.text().catch(() => res.statusText);
@@ -163,6 +285,10 @@ export class CloudDatabaseSync {
     pushedNotifications: number;
     error: string | null;
   }> {
+    if (process.env.PULSEREMIND_DB_PATH === ':memory:') {
+      return { pulledWatches: 0, pushedWatches: 0, pushedNotifications: 0, error: null };
+    }
+
     let pulledWatches = 0;
     let pushedWatches = 0;
     let pushedNotifications = 0;
@@ -188,25 +314,41 @@ export class CloudDatabaseSync {
         const remoteRows = (await getRes.json()) as Array<Record<string, unknown>>;
         const insertStmt = db.prepare(`
           INSERT OR IGNORE INTO watches (
-            id, title, category, chat_context, source_chat_client, target_url, secondary_url,
-            trigger_type, condition_text, expected_keywords, closed_keywords,
+            id, tenant_id, version, rrule, title, category, chat_context, source_chat_client, target_url, secondary_url,
+            canonical_url_key, trigger_type, condition_text, expected_keywords, closed_keywords,
             window_start_date, window_label, check_interval_minutes, poll_after,
             is_auto_resolve, proposed_outcome, closing_soon_notified,
             resolution_config, oracle_responses, status,
             notify_channels, recipient_email, last_checked_at, last_snapshot_hash,
             last_status_summary, detected_deadline, detected_apply_url, triggered_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         for (const r of remoteRows) {
+          const resConfig =
+            typeof r.resolution_config === 'string'
+              ? JSON.parse(r.resolution_config)
+              : ((r.resolution_config as Record<string, unknown>) || {});
+          const meta = ((resConfig.provider_metadata as Record<string, unknown>) || {});
+          const tenantId = String(
+            meta.tenant_id ||
+              (r.recipient_email ? deriveCanonicalTenantId(String(r.recipient_email)) : DEFAULT_TENANT_ID)
+          );
+          const rrule = meta.rrule ? String(meta.rrule) : null;
+          const version = Number(meta.version || 1);
+
           const info = insertStmt.run(
             String(r.id),
+            tenantId,
+            version,
+            rrule,
             String(r.title),
             String(r.category || 'scholarship'),
             String(r.chat_context || ''),
             String(r.source_chat_client || 'MCP Client'),
             r.target_url ? String(r.target_url) : null,
             r.secondary_url ? String(r.secondary_url) : null,
+            r.canonical_url_key ? String(r.canonical_url_key) : null,
             String(r.trigger_type || 'web_monitor'),
             String(r.condition_text || ''),
             typeof r.expected_keywords === 'string' ? r.expected_keywords : JSON.stringify(r.expected_keywords || []),
@@ -248,12 +390,16 @@ export class CloudDatabaseSync {
     if (localWatches.length > 0) {
       const formattedWatches = localWatches.map((r) => ({
         id: String(r.id),
+        tenant_id: String(r.tenant_id || DEFAULT_TENANT_ID),
+        rrule: r.rrule ? String(r.rrule) : null,
+        version: Number(r.version || 1),
         title: String(r.title),
         category: String(r.category),
         chat_context: String(r.chat_context),
         source_chat_client: String(r.source_chat_client),
         target_url: r.target_url ? String(r.target_url) : null,
         secondary_url: r.secondary_url ? String(r.secondary_url) : null,
+        canonical_url_key: r.canonical_url_key ? String(r.canonical_url_key) : null,
         trigger_type: String(r.trigger_type || 'web_monitor'),
         condition_text: String(r.condition_text),
         expected_keywords: JSON.parse(String(r.expected_keywords || '[]')),
