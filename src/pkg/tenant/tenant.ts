@@ -25,24 +25,37 @@ export function createOAuthJwtToken(sub: string, email?: string): string {
   return `${headerB64}.${payloadB64}.${signature}`;
 }
 
+export interface TenantExtractionResult {
+  tenantId: string;
+  userEmail: string | null;
+  isExplicitTenant: boolean;
+  authSource: 'bearer' | 'mcp_session' | 'header' | 'query' | 'cookie' | 'default';
+}
+
 /**
  * Deterministically derives `tenant_id` from:
  * 1. Authenticated OAuth Bearer token (`sub` claim)
  * 2. Session identifier (e.g. `Mcp-Session-Id`)
- * 3. `x-tenant-id` header or URL query parameter
- * 4. Fallback to `DEFAULT_TENANT_ID` ('tenant_default')
+ * 3. Session cookie (e.g. `prm_session=...`)
+ * 4. `x-tenant-id` header or URL query parameter (?tenant_id=... or ?session=...)
+ * 5. Fallback to `DEFAULT_TENANT_ID` ('tenant_default') with isExplicitTenant: false
  */
 export function extractTenantId(
   headers: IncomingHttpHeaders = {},
   queryParams?: URLSearchParams
-): { tenantId: string; userEmail: string | null } {
+): TenantExtractionResult {
   let userEmail: string | null = null;
 
-  // 1. Check explicit URL query param
+  // 1. Check explicit URL query param (?tenant_id=... or ?session=...)
   if (queryParams) {
-    const qTenant = queryParams.get('tenant_id');
+    const qTenant = queryParams.get('tenant_id') || queryParams.get('session') || queryParams.get('tenant');
     if (qTenant && qTenant.trim()) {
-      return { tenantId: sanitizeTenantId(qTenant.trim()), userEmail: queryParams.get('email') || null };
+      return {
+        tenantId: sanitizeTenantId(qTenant.trim()),
+        userEmail: queryParams.get('email') || null,
+        isExplicitTenant: true,
+        authSource: 'query'
+      };
     }
     const qEmail = queryParams.get('email');
     if (qEmail && qEmail.includes('@')) {
@@ -53,10 +66,29 @@ export function extractTenantId(
   // 2. Check explicit header
   const headerTenant = headers['x-tenant-id'];
   if (typeof headerTenant === 'string' && headerTenant.trim()) {
-    return { tenantId: sanitizeTenantId(headerTenant.trim()), userEmail };
+    return {
+      tenantId: sanitizeTenantId(headerTenant.trim()),
+      userEmail,
+      isExplicitTenant: true,
+      authSource: 'header'
+    };
   }
 
-  // 3. Check Authorization: Bearer <token>
+  // 3. Check Session Cookie (e.g., set after OAuth, claim URL, or in-browser activation)
+  const cookieHeader = headers.cookie;
+  if (typeof cookieHeader === 'string' && cookieHeader.trim()) {
+    const sessionMatch = cookieHeader.match(/(?:^|;\s*)(?:prm_session|prm_tenant)=([^;]+)/);
+    if (sessionMatch && sessionMatch[1].trim()) {
+      return {
+        tenantId: sanitizeTenantId(decodeURIComponent(sessionMatch[1].trim())),
+        userEmail,
+        isExplicitTenant: true,
+        authSource: 'cookie'
+      };
+    }
+  }
+
+  // 4. Check Authorization: Bearer <token>
   const rawAuth = headers.authorization;
   if (typeof rawAuth === 'string' && rawAuth.trim()) {
     const token = rawAuth.replace(/^Bearer\s+/i, '').trim();
@@ -71,7 +103,12 @@ export function extractTenantId(
             userEmail = payload.email.trim();
           }
           if (payload.sub && typeof payload.sub === 'string') {
-            return { tenantId: sanitizeTenantId(payload.sub.trim()), userEmail };
+            return {
+              tenantId: sanitizeTenantId(payload.sub.trim()),
+              userEmail,
+              isExplicitTenant: true,
+              authSource: 'bearer'
+            };
           }
         } catch {
           // not valid JSON payload, proceed
@@ -82,41 +119,53 @@ export function extractTenantId(
       if (token.startsWith('prm_live_token_')) {
         const suffix = token.replace('prm_live_token_', '');
         if (suffix === 'live') {
-          return { tenantId: DEFAULT_TENANT_ID, userEmail };
+          return { tenantId: DEFAULT_TENANT_ID, userEmail, isExplicitTenant: true, authSource: 'bearer' };
         }
         try {
           const decoded = Buffer.from(suffix, 'base64url').toString('utf-8');
           if (decoded.startsWith('{')) {
             const parsed = JSON.parse(decoded);
             if (parsed.email) userEmail = String(parsed.email);
-            if (parsed.sub) return { tenantId: sanitizeTenantId(String(parsed.sub)), userEmail };
+            if (parsed.sub) return {
+              tenantId: sanitizeTenantId(String(parsed.sub)),
+              userEmail,
+              isExplicitTenant: true,
+              authSource: 'bearer'
+            };
           } else if (decoded.includes('@')) {
             userEmail = decoded.trim();
             const derived = 'tenant_' + crypto.createHash('sha256').update(decoded).digest('hex').slice(0, 16);
-            return { tenantId: derived, userEmail };
+            return { tenantId: derived, userEmail, isExplicitTenant: true, authSource: 'bearer' };
           }
         } catch {
           // ignore decode failure
         }
-        return { tenantId: sanitizeTenantId(`tenant_${suffix.slice(0, 24)}`), userEmail };
+        return {
+          tenantId: sanitizeTenantId(`tenant_${suffix.slice(0, 24)}`),
+          userEmail,
+          isExplicitTenant: true,
+          authSource: 'bearer'
+        };
       }
 
       // If opaque Bearer token provided
       const derived = 'tenant_' + crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
-      return { tenantId: derived, userEmail };
+      return { tenantId: derived, userEmail, isExplicitTenant: true, authSource: 'bearer' };
     }
   }
 
-  // 4. Check MCP Streamable Session ID header
+  // 5. Check MCP Streamable Session ID header
   const mcpSessionId = headers['mcp-session-id'];
   if (typeof mcpSessionId === 'string' && mcpSessionId.trim()) {
     return {
       tenantId: sanitizeTenantId(`session_${mcpSessionId.trim().slice(0, 28)}`),
-      userEmail
+      userEmail,
+      isExplicitTenant: true,
+      authSource: 'mcp_session'
     };
   }
 
-  return { tenantId: DEFAULT_TENANT_ID, userEmail };
+  return { tenantId: DEFAULT_TENANT_ID, userEmail, isExplicitTenant: false, authSource: 'default' };
 }
 
 function sanitizeTenantId(raw: string): string {

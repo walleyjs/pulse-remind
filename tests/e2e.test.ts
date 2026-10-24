@@ -1872,7 +1872,9 @@ test('24. Process Crash Resilience, Monotonic Outbox Replay & Notification Ack F
             json: () => JSON.parse(output)
           });
         },
-        on: () => res
+        on: () => res,
+        once: () => res,
+        emit: () => true
       } as any;
 
       server.emit('request', req, res);
@@ -1935,6 +1937,162 @@ test('24. Process Crash Resilience, Monotonic Outbox Replay & Notification Ack F
 
   // Clean up
   watchService.deleteWatch(watch.id, tenant);
+});
+
+test('25. Multi-Tenant Zero-Leak Viewport, Route Separation & Action Checklist Persistence', async () => {
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const { createOAuthJwtToken } = await import('../src/pkg/tenant/tenant.ts');
+  const { Readable } = await import('node:stream');
+
+  const server = createAppServer();
+
+  function dispatch(options: { method: string; url: string; headers?: Record<string, string>; body?: string }): Promise<{
+    status: number;
+    text: () => string;
+    json: () => Record<string, any>;
+  }> {
+    return new Promise((resolve) => {
+      const req = new Readable({
+        read() {
+          this.push(options.body || null);
+          this.push(null);
+        }
+      }) as any;
+
+      req.method = options.method;
+      req.url = options.url;
+      req.headers = { host: 'localhost:3456', ...(options.headers || {}) };
+
+      const chunks: Buffer[] = [];
+      let statusCode = 200;
+
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const output = Buffer.concat(chunks).toString('utf-8');
+          resolve({
+            status: statusCode,
+            text: () => output,
+            json: () => (output ? JSON.parse(output) : {})
+          });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+
+      server.emit('request', req, res);
+    });
+  }
+
+  const tenantAlpha = 'tenant_user_alice';
+  const tenantBeta = 'tenant_user_bob';
+
+  const tokenAlpha = createOAuthJwtToken(tenantAlpha, 'alice@company.com');
+  const tokenBeta = createOAuthJwtToken(tenantBeta, 'bob@startup.io');
+
+  // Create watch for Tenant Alpha
+  const watchA = watchService.createWatch({
+    title: 'Alice Private Product Drop Watch',
+    chat_context: '1. Check inventory\n2. Purchase with company card',
+    category: 'product_launch',
+    recipient_email: 'alice@company.com'
+  }, tenantAlpha);
+
+  // Create watch for Tenant Beta
+  const watchB = watchService.createWatch({
+    title: 'Bob Private Visa Appointment Watch',
+    chat_context: '1. Gather passport\n2. Book London embassy slot',
+    category: 'visa_slot',
+    recipient_email: 'bob@startup.io'
+  }, tenantBeta);
+
+  // 25a. Anonymous User Protection: Unauthenticated request to /api/overview returns 0 leaked watches
+  const anonRes = await dispatch({ method: 'GET', url: '/api/overview' });
+  assert.equal(anonRes.status, 200);
+  assert.equal(anonRes.json().authenticated, false);
+  assert.equal(anonRes.json().watches.length, 0, 'Anonymous visitor must receive 0 private database watches');
+  assert.equal(anonRes.json().notifications.length, 0, 'Anonymous visitor must receive 0 private notifications');
+
+  // 25b. Tenant Isolation: Alice sees ONLY Alice watch
+  const aliceRes = await dispatch({
+    method: 'GET',
+    url: '/api/overview',
+    headers: { authorization: `Bearer ${tokenAlpha}` }
+  });
+  assert.equal(aliceRes.status, 200);
+  assert.equal(aliceRes.json().authenticated, true);
+  assert.equal(aliceRes.json().tenant_id, tenantAlpha);
+  assert.equal(aliceRes.json().watches.length, 1);
+  assert.equal(aliceRes.json().watches[0].id, watchA.id);
+  assert.equal(aliceRes.json().watches[0].title, 'Alice Private Product Drop Watch');
+
+  // 25c. Tenant Isolation: Bob sees ONLY Bob watch via Cookie
+  const bobRes = await dispatch({
+    method: 'GET',
+    url: '/api/overview',
+    headers: { cookie: `prm_session=${tenantBeta}` }
+  });
+  assert.equal(bobRes.status, 200);
+  assert.equal(bobRes.json().authenticated, true);
+  assert.equal(bobRes.json().tenant_id, tenantBeta);
+  assert.equal(bobRes.json().watches.length, 1);
+  assert.equal(bobRes.json().watches[0].id, watchB.id);
+  assert.equal(bobRes.json().watches[0].title, 'Bob Private Visa Appointment Watch');
+
+  // 25d. Action Checklist Persistence: Toggling checklist item persists in metadata
+  const checkRes = await dispatch({
+    method: 'POST',
+    url: `/api/watches/${encodeURIComponent(watchA.id)}/checklist`,
+    headers: { authorization: `Bearer ${tokenAlpha}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ item: 'Check inventory', completed: true })
+  });
+  assert.equal(checkRes.status, 200);
+  assert.equal(checkRes.json().success, true);
+  const updatedWatchA = watchService.getWatchById(watchA.id, tenantAlpha);
+  assert.ok(updatedWatchA?.resolution_config?.provider_metadata?.checklist_completed?.includes('Check inventory'));
+
+  // Cross-tenant checklist tampering must be rejected
+  const crossCheckRes = await dispatch({
+    method: 'POST',
+    url: `/api/watches/${encodeURIComponent(watchA.id)}/checklist`,
+    headers: { authorization: `Bearer ${tokenBeta}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ item: 'Malicious modification', completed: true })
+  });
+  assert.equal(crossCheckRes.status, 404, 'Bob cannot modify Alice checklist');
+
+  // 25e. Route Separation: /dev/sandbox serves developer lab while / serves production hub
+  const sandboxRes = await dispatch({ method: 'GET', url: '/dev/sandbox' });
+  assert.equal(sandboxRes.status, 200);
+  assert.ok(sandboxRes.text().includes('Developer Simulation Lab'));
+  assert.ok(sandboxRes.text().includes('Mock External Server Controls'));
+
+  const hubRes = await dispatch({ method: 'GET', url: '/' });
+  assert.equal(hubRes.status, 200);
+  assert.ok(hubRes.text().includes('PulseRemind'));
+  assert.ok(hubRes.text().includes('Universal Event &amp; Web-State Alert Engine'));
+
+  // 25f. Out-of-band claim view (/claim/:token) renders scoped single-watch claim page with calendar links
+  const claimToken = watchA.resolution_config?.provider_metadata?.subscriber_token;
+  assert.ok(claimToken, 'Watch should have subscriber claim token');
+  const claimPageRes = await dispatch({ method: 'GET', url: `/claim/${claimToken}` });
+  assert.equal(claimPageRes.status, 200);
+  assert.ok(claimPageRes.text().includes('Out-of-Band Claim Token'));
+  assert.ok(claimPageRes.text().includes('Alice Private Product Drop Watch'));
+  assert.ok(claimPageRes.text().includes('Google Calendar'));
+  assert.ok(claimPageRes.text().includes('.ics'));
+
+  // Clean up
+  watchService.deleteWatch(watchA.id, tenantAlpha);
+  watchService.deleteWatch(watchB.id, tenantBeta);
 });
 
 

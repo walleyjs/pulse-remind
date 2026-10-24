@@ -15,7 +15,7 @@ import { initDatabase } from '../db/bootstrap.ts';
 import { cloudDatabaseSync } from '../db/cloud-sync.ts';
 import { outboxProcessor } from '../db/outbox.ts';
 import { extractTenantId, createOAuthJwtToken } from '../tenant/tenant.ts';
-import { buildWatchIcsFeed } from '../calendar/ics.ts';
+import { buildWatchIcsFeed, buildWatchCalendarLinks } from '../calendar/ics.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
 
@@ -642,35 +642,87 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      // 4. Dashboard Overview & State API
+      // 4. Dashboard Overview & State API (Strictly Scoped to Authenticated Tenant)
       if (pathname === '/api/overview' && req.method === 'GET') {
-        const watches = watchService.listWatches();
-        const notifications = notificationService.listNotifications(40);
-        const checkLogs = watchService.listCheckLogs(undefined, 25);
-        const channels = notificationService.getChannelConfigs();
-        const demoPortals = demoPortalService.listPortals();
+        const { tenantId, userEmail, isExplicitTenant, authSource } = extractTenantId(req.headers, parsedUrl.searchParams);
+
+        // Multi-tenant privacy invariant: anonymous visitors receive an empty vault with zero private DB records
+        const watches = isExplicitTenant ? watchService.listWatches('all', tenantId) : [];
+        const notifications = isExplicitTenant ? notificationService.listNotifications(40, tenantId) : [];
+        const checkLogs = isExplicitTenant ? watchService.listCheckLogs(undefined, 25, tenantId) : [];
+        const channels = isExplicitTenant ? notificationService.getChannelConfigs(tenantId) : [];
 
         sendJson(res, 200, {
+          authenticated: isExplicitTenant,
+          auth_source: authSource,
+          tenant_id: isExplicitTenant ? tenantId : null,
+          user_email: userEmail,
           infrastructure: cloudDatabaseSync.getStatus(),
           watches,
           notifications,
           unread_count: notifications.filter((n) => !n.is_read).length,
           check_logs: checkLogs,
           channels,
-          demo_portals: demoPortals,
           mcp_tools: MCP_TOOLS
         });
         return;
       }
 
+      // 4b. Developer Simulation Sandbox State API
+      if ((pathname === '/api/dev/sandbox' || pathname === '/api/dev/overview') && req.method === 'GET') {
+        const demoPortals = demoPortalService.listPortals();
+        const checkLogs = watchService.listCheckLogs(undefined, 25);
+        sendJson(res, 200, {
+          infrastructure: cloudDatabaseSync.getStatus(),
+          demo_portals: demoPortals,
+          check_logs: checkLogs,
+          mcp_tools: MCP_TOOLS
+        });
+        return;
+      }
+
+      // 4c. Client Session Management (Login/Logout for Web Vault)
+      if (pathname === '/api/auth/session' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const requestedTenant = typeof body.tenant_id === 'string' && body.tenant_id.trim()
+          ? body.tenant_id.trim()
+          : (typeof body.email === 'string' && body.email.includes('@')
+              ? 'tenant_' + crypto.createHash('sha256').update(body.email.trim()).digest('hex').slice(0, 16)
+              : null);
+        if (!requestedTenant) {
+          sendJson(res, 400, { error: 'Invalid tenant_id or email provided' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `prm_session=${encodeURIComponent(requestedTenant)}; Path=/; SameSite=Lax; Max-Age=31536000`,
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ success: true, tenant_id: requestedTenant }));
+        return;
+      }
+
+      if (pathname === '/api/auth/logout' && req.method === 'POST') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': 'prm_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
       // 5. Watches CRUD + Resolution Engine triggers
       if (pathname === '/api/watches' && req.method === 'GET') {
+        const { tenantId, isExplicitTenant } = extractTenantId(req.headers, parsedUrl.searchParams);
         const statusFilter = parsedUrl.searchParams.get('status') || 'all';
-        sendJson(res, 200, { watches: watchService.listWatches(statusFilter) });
+        const watches = isExplicitTenant ? watchService.listWatches(statusFilter, tenantId) : [];
+        sendJson(res, 200, { watches });
         return;
       }
 
       if (pathname === '/api/watches' && req.method === 'POST') {
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
         const body = await readJsonBody(req);
         const timeframeText = String(
           body.window_label || body.timeframe_text || body.window_start_date || 'End of Month'
@@ -706,9 +758,25 @@ export function createAppServer(): http.Server {
           recipient_email: body.recipient_email
             ? String(body.recipient_email)
             : 'student@university.edu'
-        });
+        }, tenantId);
 
         sendJson(res, 201, { watch });
+        return;
+      }
+
+      const checklistMatch = pathname.match(/^\/api\/watches\/([^/]+)\/checklist$/);
+      if (checklistMatch && req.method === 'POST') {
+        const watchId = decodeURIComponent(checklistMatch[1]);
+        const body = await readJsonBody(req);
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const itemText = typeof body.item === 'string' ? body.item.trim() : '';
+        const completed = Boolean(body.completed);
+        const updated = watchService.toggleChecklistItem(watchId, itemText, completed, tenantId);
+        if (!updated) {
+          sendJson(res, 404, { error: 'Watch not found or unauthorized' });
+          return;
+        }
+        sendJson(res, 200, { success: true, watch: updated });
         return;
       }
 
@@ -960,65 +1028,111 @@ export function createAppServer(): http.Server {
             ? watch.recipient_email
             : '';
         const currentNtfy = watch?.resolution_config?.provider_metadata?.ntfy_topic || `pulseremind-${token.slice(4, 10)}`;
+        const calLinks = watch ? buildWatchCalendarLinks(watch, baseUrl) : null;
+        const targetWindow = watch?.window_label || watch?.window_start_date || 'Upcoming';
+        const targetDeadline = watch?.detected_deadline || 'To be determined';
+        const targetUrl = watch?.target_url || '';
+        const checklist = watch?.chat_context || '1. Monitor announcements\n2. Prepare credentials\n3. Register before window closes';
 
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        // Auto-bind browser session cookie to this watch's tenant
+        const cookieHeader = watch ? `prm_session=${encodeURIComponent(watch.tenant_id)}; Path=/; SameSite=Lax; Max-Age=31536000` : '';
+
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          ...(cookieHeader ? { 'Set-Cookie': cookieHeader } : {})
+        });
         res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Claim Alert — ${watchTitle}</title>
+  <title>Claim Reminder — ${watchTitle}</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 40px auto; padding: 20px; background: #090d16; color: #f8fafc; line-height: 1.5; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 620px; margin: 36px auto; padding: 20px; background: #090d16; color: #f8fafc; line-height: 1.5; }
     .card { background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 28px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); }
-    .badge { display: inline-block; background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
-    h2 { margin: 0 0 6px; font-size: 20px; }
+    .badge { display: inline-block; background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+    h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.3; }
+    .meta-box { background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px 16px; margin: 16px 0; font-size: 13px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .meta-item strong { display: block; color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
+    .checklist-box { background: #0b1120; border: 1px solid #1e293b; border-radius: 10px; padding: 16px; margin: 18px 0; }
+    .checklist-box h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #38bdf8; }
+    .checklist-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: #cbd5e1; margin-bottom: 8px; line-height: 1.4; }
+    .cal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+    .btn-cal { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 14px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #f8fafc; text-decoration: none; font-size: 13px; font-weight: 600; text-align: center; }
+    .btn-cal:hover { background: #334155; }
     label { display: block; font-size: 13px; font-weight: 600; color: #cbd5e1; margin-top: 16px; margin-bottom: 6px; }
     input[type="email"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 11px 14px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; font-size: 14px; }
     .channels { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
     .chip { display: flex; align-items: center; gap: 6px; background: #0f172a; border: 1px solid #334155; padding: 6px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; }
-    .btn { width: 100%; margin-top: 22px; padding: 12px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg, #10b981, #059669); color: #052e16; font-weight: 700; font-size: 15px; cursor: pointer; }
-    .btn-secondary { width: 100%; margin-top: 10px; padding: 10px 14px; border: 1px solid #334155; border-radius: 10px; background: #1e293b; color: #e2e8f0; font-weight: 600; font-size: 13px; cursor: pointer; }
+    .btn { width: 100%; margin-top: 20px; padding: 12px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg, #10b981, #059669); color: #052e16; font-weight: 700; font-size: 15px; cursor: pointer; }
+    .btn-vault { display: block; text-align: center; margin-top: 16px; color: #38bdf8; font-size: 13px; text-decoration: none; font-weight: 600; }
     .status { margin-top: 14px; font-size: 13px; color: #34d399; display: none; }
     .hint { font-size: 12px; color: #94a3b8; margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="card">
-    <span class="badge">🔒 Privacy-First Alert Binding • ${token}</span>
-    <h2>${watchTitle}</h2>
-    <p style="color:#94a3b8;font-size:13px;margin-top:4px;">Your AI chat never needs your personal email or phone. Bind your notification channels directly here.</p>
+    <span class="badge">🔒 Out-of-Band Claim Token • ${token}</span>
+    <h1>${watchTitle}</h1>
+    <p style="color:#94a3b8;font-size:13px;margin:0 0 16px;">This reminder was captured during your AI chat session. Your identity is private; bind your preferred channels below.</p>
 
-    <label for="email">📧 Email Address for Alert Delivery</label>
+    <div class="meta-box">
+      <div class="meta-item">
+        <strong>Target Window</strong>
+        <span>📅 ${targetWindow}</span>
+      </div>
+      <div class="meta-item">
+        <strong>Deadline</strong>
+        <span>⏰ ${targetDeadline}</span>
+      </div>
+      ${targetUrl ? `<div class="meta-item" style="grid-column: span 2;"><strong>Target URL</strong><a href="${targetUrl}" target="_blank" style="color:#38bdf8;word-break:break-all;">${targetUrl}</a></div>` : ''}
+    </div>
+
+    <div class="checklist-box">
+      <h3>📋 AI Action Checklist</h3>
+      ${checklist.split('\n').filter(Boolean).map(item => `<div class="checklist-item"><span>✔️</span><span>${item.replace(/^[0-9.\-\s]+/, '')}</span></div>`).join('')}
+    </div>
+
+    ${calLinks ? `
+    <label>🗓️ 1-Click Native Calendar Reminders (Dual VALARMs)</label>
+    <div class="cal-actions">
+      <a class="btn-cal" href="${calLinks.google_calendar_url}" target="_blank">Google Calendar ↗</a>
+      <a class="btn-cal" href="${calLinks.ics_download_url}" download="${token}.ics">Apple / Outlook (.ics) ↓</a>
+    </div>` : ''}
+
+    <label for="email">📧 Email for Opening &amp; Deadline Alerts</label>
     <input id="email" type="email" placeholder="you@example.com" value="${currentEmail}" />
 
-    <label for="ntfy">📲 Mobile & Desktop Push Topic (via free <a href="https://ntfy.sh" target="_blank" style="color:#38bdf8;">ntfy.sh</a> app)</label>
+    <label for="ntfy">📲 Push Notifications Topic (via free <a href="https://ntfy.sh" target="_blank" style="color:#38bdf8;">ntfy.sh</a> app)</label>
     <input id="ntfy" type="text" placeholder="pulseremind-your-topic" value="${currentNtfy}" />
-    <div class="hint">Subscribe to <strong>https://ntfy.sh/${currentNtfy}</strong> in the iOS/Android ntfy app or browser for instant push notifications.</div>
+    <div class="hint">Subscribe to <strong>https://ntfy.sh/${currentNtfy}</strong> in iOS/Android or enable browser push below.</div>
 
-    <label>🔔 Active Channels</label>
+    <label>🔔 Delivery Channels</label>
     <div class="channels">
-      <label class="chip"><input type="checkbox" class="ch" value="in_app" checked /> Web Dashboard</label>
+      <label class="chip"><input type="checkbox" class="ch" value="in_app" checked /> Web Vault</label>
       <label class="chip"><input type="checkbox" class="ch" value="email" checked /> Email</label>
       <label class="chip"><input type="checkbox" class="ch" value="telegram" /> Telegram</label>
       <label class="chip"><input type="checkbox" class="ch" value="slack" /> Slack</label>
       <label class="chip"><input type="checkbox" class="ch" value="discord" /> Discord</label>
     </div>
 
-    <button class="btn" id="saveBtn">Save Email & Activate Push Alerts</button>
-    <button class="btn-secondary" id="browserPushBtn" type="button">🌐 Enable Browser Push Notifications on This Device</button>
+    <button class="btn" id="saveBtn">Save &amp; Arm Notifications</button>
+    <button class="btn-cal" id="browserPushBtn" type="button" style="width:100%;margin-top:10px;">🌐 Enable Browser Push on This Device</button>
     <div class="status" id="statusMsg"></div>
+
+    <a href="/?session=${encodeURIComponent(watch?.tenant_id || '')}" class="btn-vault">View in My Personal Watch Vault &rarr;</a>
   </div>
+
   <script>
     document.getElementById('browserPushBtn').addEventListener('click', async () => {
       if (!('Notification' in window)) {
-        alert('Browser notifications are not supported in this browser.');
+        alert('Browser push notifications are not supported in this browser.');
         return;
       }
       const perm = await Notification.requestPermission();
       if (perm === 'granted') {
         new Notification('PulseRemind Push Active!', {
-          body: 'You will receive desktop/mobile browser push alerts when ' + ${JSON.stringify(watchTitle)} + ' opens.',
+          body: 'You will receive browser push alerts for ' + ${JSON.stringify(watchTitle)},
           icon: '/pulseremind-icon-256.png'
         });
       }
@@ -1036,16 +1150,30 @@ export function createAppServer(): http.Server {
       const msg = document.getElementById('statusMsg');
       msg.style.display = 'block';
       if (res.ok) {
-        msg.textContent = '✅ Saved! Alerts will be delivered to ' + (email || 'your selected channels') + (ntfy ? ' + push topic ntfy.sh/' + ntfy : '') + '.';
+        msg.textContent = '✅ Armed! Alerts will be delivered to ' + (email || 'your selected channels') + '.';
       } else {
         msg.style.color = '#f87171';
-        msg.textContent = '⚠️ Could not find watch token — it may belong to a previous session.';
+        msg.textContent = '⚠️ Could not save watch settings.';
       }
     });
   </script>
 </body>
 </html>`);
         return;
+      }
+
+      // 8c. Route Separation: Dedicated Developer Simulation Sandbox Route
+      if ((pathname === '/dev/sandbox' || pathname === '/sandbox') && req.method === 'GET') {
+        const sandboxHtmlPath = path.join(process.cwd(), 'public', 'sandbox.html');
+        if (fs.existsSync(sandboxHtmlPath)) {
+          const content = fs.readFileSync(sandboxHtmlPath);
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Length': content.length
+          });
+          res.end(content);
+          return;
+        }
       }
 
       // 9. Static Frontend Assets (public/)
@@ -1060,8 +1188,12 @@ export function createAppServer(): http.Server {
       ) {
         const ext = path.extname(filePath).toLowerCase();
         const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-        res.writeHead(200, { 'Content-Type': contentType });
-        fs.createReadStream(filePath).pipe(res);
+        const content = fs.readFileSync(filePath);
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': content.length
+        });
+        res.end(content);
         return;
       }
 

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PulseRemind — Developer Simulation Lab &amp; Test Harness</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .dev-banner { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 14px 18px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
+    .dev-banner-text strong { color: #f59e0b; display: block; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
+    .dev-banner-text p { margin: 0; font-size: 13px; color: #cbd5e1; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="/favicon.svg" alt="PulseRemind Logo" width="38" height="38" style="border-radius: 8px;" />
+        <div>
+          <div class="brand-title">PulseRemind <span class="brand-tag" style="background:rgba(245,158,11,0.2);color:#fbbf24;border-color:rgba(245,158,11,0.4);">Developer Lab</span></div>
+          <div class="brand-subtitle">Interactive Portal Flips, AI Prompt Runner &amp; E2E Scraper Simulator</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a href="/" class="btn btn-secondary">&larr; Return to Universal Hub</a>
+        <button type="button" class="btn btn-secondary" id="checkAllNowBtn">🔄 Trigger Immediate Sweep</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="margin-top:24px;">
+    <div class="dev-banner">
+      <div class="dev-banner-text">
+        <strong>⚠️ Isolated Developer Environment</strong>
+        <p>This test harness is separated from the public product hub. Flip mock portals to test scraping, hazard-rate convergence, and multi-channel outbox dispatching.</p>
+      </div>
+      <a href="/" class="btn btn-sm btn-primary">Go to Personal Vault &rarr;</a>
+    </div>
+
+    <!-- Live End-to-End Test Simulator Bar -->
+    <section class="simulator-panel" aria-labelledby="simHeading">
+      <div class="simulator-header">
+        <div>
+          <span class="eyebrow">🔬 Mock External Server Controls</span>
+          <h2 id="simHeading">Simulated External Portals</h2>
+          <p class="muted">
+            Flip any portal below from <strong>Closed</strong> to <strong>Open</strong> to watch PulseRemind scrape the live DOM, detect opening deadlines &amp; CTAs, and dispatch Email, Web Push, and Webhooks in real time.
+          </p>
+        </div>
+      </div>
+      <div class="portal-grid" id="demoPortalsContainer">
+        <!-- Populated by sandbox.js -->
+      </div>
+    </section>
+
+    <div class="workspace-grid" style="margin-top:24px;">
+      <!-- Left Column: AI Chat Extractor Playground -->
+      <div class="main-column">
+        <section class="card chat-extractor-card" aria-labelledby="chatSimTitle">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">💬 AI Conversation Hook (`extract_watches_from_chat` Tool)</span>
+              <h2 id="chatSimTitle">Simulate Planning in an AI Chat</h2>
+            </div>
+            <div class="preset-buttons">
+              <button type="button" class="chip-btn" data-preset="end-of-month">Preset: End of Month</button>
+              <button type="button" class="chip-btn" data-preset="early-next-year">Preset: Early Next Year</button>
+              <button type="button" class="chip-btn" data-preset="multi">Preset: Multi-Event Plan</button>
+            </div>
+          </div>
+          <p class="muted">
+            Test how conversational LLM transcripts are parsed. PulseRemind scrubs PII via PrivacyMinimizer, generates non-PII Action Checklists, and provisions out-of-band claim tokens.
+          </p>
+          <form id="chatExtractForm" class="extract-form">
+            <label for="chatTranscriptInput" class="sr-only">AI Chat Transcript</label>
+            <textarea
+              id="chatTranscriptInput"
+              rows="4"
+              required
+              placeholder="e.g., WWDC registration opens at the end of this month, and the Global AI Graduate Scholarship opens early next year..."
+            >User: I'm planning my Fall 2027 Master's applications, but the Horizon Global AI Fellowship won't open until the end of this month, and the Commonwealth Emerging Leaders Grant doesn't open until early next year (January 2027).
+Assistant: Let's prepare your statement of purpose now, and I'll set a PulseRemind web watch for both so you get notified the day their portals open!</textarea>
+            <div class="extract-actions">
+              <div class="input-inline">
+                <label for="extractEmailInput">Notify Email:</label>
+                <input type="email" id="extractEmailInput" placeholder="developer@pulseremind.ai" />
+              </div>
+              <button type="submit" class="btn btn-primary" id="extractSubmitBtn">
+                ✨ Extract &amp; Test Schedule
+              </button>
+            </div>
+          </form>
+          <div id="extractResultBox" class="extract-result hidden" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <!-- Right Column: Verification Engine Check Logs & Test Alert -->
+      <aside class="side-column">
+        <section class="card" aria-labelledby="logsHeading">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">🕵️ Web Verification Engine</span>
+              <h2 id="logsHeading">Recent Page Check Logs</h2>
+            </div>
+            <button type="button" class="btn btn-sm btn-secondary" id="testChannelsBtn">Send Test Alert</button>
+          </div>
+          <div id="checkLogsContainer" class="logs-list">
+            <!-- Populated by sandbox.js -->
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script type="module" src="/sandbox.js"></script>
+</body>
+</html>

@@ -1,32 +1,14 @@
 let currentFilter = 'all';
 let latestState = {
+  authenticated: false,
+  tenant_id: null,
+  user_email: null,
   watches: [],
   notifications: [],
   unread_count: 0,
   check_logs: [],
-  channels: [],
-  demo_portals: []
+  channels: []
 };
-
-// Mandatory fallback for browsers without native <dialog closedby="any"> support
-function setupDialogLightDismissFallbacks() {
-  const dialogs = document.querySelectorAll('dialog');
-  if (!('closedBy' in HTMLDialogElement.prototype)) {
-    dialogs.forEach((dialog) => {
-      dialog.addEventListener('click', (event) => {
-        if (event.target !== dialog) return;
-        const rect = dialog.getBoundingClientRect();
-        const isDialogContent =
-          rect.top <= event.clientY &&
-          event.clientY <= rect.top + rect.height &&
-          rect.left <= event.clientX &&
-          event.clientX <= rect.left + rect.width;
-        if (isDialogContent) return;
-        dialog.close();
-      });
-    });
-  }
-}
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -40,103 +22,107 @@ function formatTime(iso) {
   if (!iso) return 'Never';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + d.toLocaleDateString() + ')';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' (' + d.toLocaleDateString() + ')';
 }
 
-function formatStatusLabel(status) {
-  switch (status) {
-    case 'triggered_open':
-      return '🟢 OPEN — Applications Live!';
-    case 'active_monitoring':
-      return '🔵 Actively Monitoring Webpage';
-    case 'hibernating':
-      return '🟣 Hibernating Until Window';
-    case 'config_error':
-      return '⚠️ Entity Mismatch (Auto-Resolve Paused)';
-    case 'expired_closed':
-      return '🔴 Deadline Passed / Closed';
-    case 'paused':
-      return '⏸ Paused';
-    default:
-      return status;
+function calculateCountdown(targetDateIso) {
+  if (!targetDateIso) return null;
+  const target = new Date(targetDateIso).getTime();
+  if (isNaN(target)) return null;
+  const diffMs = target - Date.now();
+  if (diffMs <= 0) return { expired: true, text: 'Window Reached / Active' };
+
+  const totalSec = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+
+  if (days > 0) {
+    return {
+      expired: false,
+      days,
+      text: `${days}d ${hours.toString().padStart(2, '0')}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`
+    };
+  }
+  return {
+    expired: false,
+    days: 0,
+    text: `${hours.toString().padStart(2, '0')}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`
+  };
+}
+
+function getTemporalPhaseBadge(watch) {
+  if (watch.status === 'triggered_open') {
+    return '<span class="status-badge badge-live">🟢 LIVE NOW — Applications / Tickets Open</span>';
+  }
+  if (watch.status === 'expired_closed') {
+    return '<span class="status-badge badge-closed">🔴 Deadline Passed / Closed</span>';
+  }
+
+  const target = watch.window_start_date || watch.detected_deadline;
+  if (!target) {
+    return '<span class="status-badge badge-sampling">🔵 Active Sampling</span>';
+  }
+
+  const targetMs = new Date(target).getTime();
+  const diffDays = (targetMs - Date.now()) / (1000 * 86400);
+
+  if (diffDays > 21) {
+    return '<span class="status-badge badge-hibernating">🟣 HIBERNATING (Check ~7d)</span>';
+  }
+  if (diffDays > 3) {
+    return '<span class="status-badge badge-approaching">🔵 APPROACHING (2h - 24h)</span>';
+  }
+  return '<span class="status-badge badge-sampling">⚡ BURST SAMPLING (Minutes)</span>';
+}
+
+function getCategoryIcon(cat) {
+  switch (cat) {
+    case 'tickets': return '🎟️ Tickets';
+    case 'product_launch': return '🚀 Product Launch';
+    case 'regulatory_deadline': return '⚖️ Regulatory / SEC';
+    case 'visa_slot': return '✈️ Visa Slot';
+    case 'conference': return '🎤 Conference';
+    case 'hackathon': return '💻 Hackathon';
+    case 'grant': return '💰 Grant';
+    case 'calendar_reminder': return '🗓️ Calendar';
+    default: return '🎓 Opportunity';
   }
 }
 
-function formatPollAfter(unixSec) {
-  if (!unixSec) return 'Ready now';
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (unixSec <= nowSec) return 'Ready now (Next cycle)';
-  const d = new Date(unixSec * 1000);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+async function fetchOverview() {
+  try {
+    const res = await fetch('/api/overview');
+    latestState = await res.json();
+    updateSessionIndicator();
+    renderAll();
+  } catch (err) {
+    console.error('Failed to fetch personal overview', err);
+  }
 }
 
-async function fetchOverview() {
-  const res = await fetch('/api/overview');
-  latestState = await res.json();
-  renderAll();
+function updateSessionIndicator() {
+  const label = document.getElementById('sessionLabel');
+  const dot = document.getElementById('sessionStatusIndicator');
+  const input = document.getElementById('currentTenantInput');
+
+  if (latestState.authenticated && latestState.tenant_id) {
+    const shortId = latestState.tenant_id.replace(/^tenant_/, '').slice(0, 10);
+    if (label) label.textContent = `Vault: ${shortId}`;
+    if (dot) dot.style.background = '#10b981';
+    if (input) input.value = latestState.tenant_id + (latestState.user_email ? ` (${latestState.user_email})` : '');
+  } else {
+    if (label) label.textContent = 'Guest Vault';
+    if (dot) dot.style.background = '#94a3b8';
+    if (input) input.value = 'Guest (Anonymous session)';
+  }
 }
 
 function renderAll() {
-  renderDemoPortals();
   renderWatches();
   renderNotifications();
   renderChannels();
-  renderCheckLogs();
-}
-
-function renderDemoPortals() {
-  const container = document.getElementById('demoPortalsContainer');
-  if (!container) return;
-
-  container.innerHTML = latestState.demo_portals
-    .map((p) => {
-      const statusBadge = p.is_open
-        ? `<span class="status-badge badge-triggered_open">🟢 PORTAL OPEN</span>`
-        : `<span class="status-badge badge-paused">🔒 CLOSED (Opens ${escapeHtml(p.open_date_text)})</span>`;
-      const toggleBtnLabel = p.is_open
-        ? '🔒 Reset Portal to Closed'
-        : '🚀 Simulate Applications Opening Now!';
-      const toggleBtnClass = p.is_open ? 'btn btn-sm btn-secondary' : 'btn btn-sm btn-success';
-
-      return `
-        <div class="portal-card ${p.is_open ? 'is-open' : ''}">
-          <div class="portal-top">
-            <div>
-              <div class="portal-title">${escapeHtml(p.title)}</div>
-              <div class="portal-org">${escapeHtml(p.organization)} • ${escapeHtml(p.award_amount)}</div>
-            </div>
-            ${statusBadge}
-          </div>
-          <div style="font-size: 12.5px; color: #cbd5e1;">
-            ${escapeHtml(p.custom_banner || '')}
-          </div>
-          <div class="portal-actions">
-            <a href="/demo/scholarships/${encodeURIComponent(p.slug)}" target="_blank" style="color: #38bdf8; font-size: 12.5px; text-decoration: none; font-weight: 600;">
-              View External Webpage ↗
-            </a>
-            <button type="button" class="${toggleBtnClass}" data-toggle-portal="${escapeHtml(p.slug)}" data-next-open="${!p.is_open}">
-              ${toggleBtnLabel}
-            </button>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-
-  container.querySelectorAll('[data-toggle-portal]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const slug = btn.getAttribute('data-toggle-portal');
-      const nextOpen = btn.getAttribute('data-next-open') === 'true';
-      btn.disabled = true;
-      btn.textContent = 'Updating & Scraping...';
-      await fetch(`/api/demo-portals/${encodeURIComponent(slug)}/toggle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_open: nextOpen, trigger_check: true })
-      });
-      await fetchOverview();
-    });
-  });
 }
 
 function renderWatches() {
@@ -144,293 +130,315 @@ function renderWatches() {
   const countBadge = document.getElementById('watchesCountBadge');
   if (!container) return;
 
-  const filtered =
-    currentFilter === 'all'
-      ? latestState.watches
-      : latestState.watches.filter((w) => w.status === currentFilter);
+  const allWatches = latestState.watches || [];
+  if (countBadge) countBadge.textContent = String(allWatches.length);
 
-  if (countBadge) {
-    countBadge.textContent = String(latestState.watches.length);
+  // If user has NO watches in this session: render pristine Zero-State showcase
+  if (allWatches.length === 0) {
+    container.innerHTML = `
+      <div class="zero-state-showcase">
+        <div style="font-size:36px;margin-bottom:8px;">🎯</div>
+        <h3 style="margin:0 0 6px;font-size:17px;">Your Private Watch Vault is Empty</h3>
+        <p class="muted" style="max-width:540px;margin:0 auto 18px;">
+          PulseRemind captures events directly from AI chats. Once you or your LLM schedules an event or reminder, it will appear here with live countdowns and checklists.
+        </p>
+
+        <div class="showcase-grid">
+          <div class="showcase-card">
+            <h4>🎟️ Glastonbury 2027 Coach + Tickets</h4>
+            <p>Target Window: October 2026. Monitors ticket sale hydration state with sub-minute bursts before drop.</p>
+          </div>
+          <div class="showcase-card">
+            <h4>🚀 PlayStation 6 Pre-Order Drops</h4>
+            <p>Monitors Schema.org InStock vs SoldOut with ETag short-circuiting and immediate Web Push.</p>
+          </div>
+          <div class="showcase-card">
+            <h4>⚖️ SEC Form 10-K Annual Filing</h4>
+            <p>AoE (UTC-12) deadline resolution with dual VALARM calendar sync and multi-probe anti-flap verification.</p>
+          </div>
+        </div>
+
+        <button type="button" class="btn btn-primary" id="zeroStateCreateBtn">+ Create First Watch</button>
+      </div>
+    `;
+
+    document.getElementById('zeroStateCreateBtn')?.addEventListener('click', () => {
+      document.getElementById('createWatchDialog')?.showModal();
+    });
+    return;
   }
 
+  // Filter watches by current status tab
+  const filtered = allWatches.filter((w) => {
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'triggered_open') return w.status === 'triggered_open';
+    if (currentFilter === 'hibernating') return w.status === 'hibernating';
+    if (currentFilter === 'active_monitoring') {
+      return w.status === 'active_monitoring' || w.status === 'exponential_approach' || w.status === 'active_sampling';
+    }
+    return true;
+  });
+
   if (filtered.length === 0) {
-    container.innerHTML = `<div class="muted" style="padding: 18px 0;">No watches match this filter. Try extracting one from the AI chat simulator above!</div>`;
+    container.innerHTML = `<p class="empty-state">No watches matching filter "${currentFilter}".</p>`;
     return;
   }
 
   container.innerHTML = filtered
     .map((w) => {
-      const applyButtonHtml =
-        w.status === 'triggered_open' && (w.detected_apply_url || w.target_url)
-          ? `<a class="btn btn-sm btn-success" href="${escapeHtml(w.detected_apply_url || w.target_url)}" target="_blank" style="text-decoration:none;">Apply on Portal Now ↗</a>`
-          : '';
-      const oracleCount = Array.isArray(w.oracle_responses) ? w.oracle_responses.length : 0;
+      const catLabel = getCategoryIcon(w.category);
+      const phaseBadge = getTemporalPhaseBadge(w);
+      const targetDate = w.window_start_date || w.detected_deadline;
+      const countdown = calculateCountdown(targetDate);
+
+      let countdownHtml = '';
+      if (countdown) {
+        if (countdown.expired) {
+          countdownHtml = `<span class="countdown-meter live">🟢 ${escapeHtml(countdown.text)}</span>`;
+        } else {
+          const isUrgent = countdown.days <= 3;
+          countdownHtml = `<span class="countdown-meter ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">⏳ ${escapeHtml(countdown.text)}</span>`;
+        }
+      }
+
+      // Parse Action Checklist items
+      const meta = w.resolution_config?.provider_metadata || {};
+      const completedList = Array.isArray(meta.checklist_completed) ? meta.checklist_completed : [];
+      const rawChecklist = w.chat_context || '';
+      const checklistItems = rawChecklist
+        .split('\n')
+        .map((l) => l.trim().replace(/^[0-9.\-\s*]+/, ''))
+        .filter((l) => l.length > 2);
+
+      let checklistHtml = '';
+      if (checklistItems.length > 0) {
+        checklistHtml = `
+          <div class="watch-checklist">
+            <div class="checklist-title">📋 AI Action Checklist</div>
+            ${checklistItems
+              .map((item) => {
+                const isChecked = completedList.includes(item);
+                return `
+                <label class="checklist-checkbox-label ${isChecked ? 'is-done' : ''}">
+                  <input type="checkbox" data-watch-id="${w.id}" data-item="${escapeHtml(item)}" ${isChecked ? 'checked' : ''} />
+                  <span>${escapeHtml(item)}</span>
+                </label>
+              `;
+              })
+              .join('')}
+          </div>
+        `;
+      }
+
+      // Calendar Links
+      const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent('🔔 ' + w.title)}&dates=${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T090000Z/${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T100000Z&details=${encodeURIComponent(w.chat_context || w.title)}`;
+      const icsDownloadUrl = `/api/watches/${encodeURIComponent(w.id)}/calendar.ics`;
 
       return `
-        <article class="watch-card status-${escapeHtml(w.status)}">
-          <div class="watch-top">
+        <div class="watch-card" data-watch-id="${w.id}">
+          <div class="watch-card-header">
             <div>
-              <h3 class="watch-title">${escapeHtml(w.title)}</h3>
-              <div style="font-size: 12px; color: #94a3b8;">
-                Captured via <strong>${escapeHtml(w.source_chat_client)}</strong> • Target Window: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Immediate')}</strong>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+                <span class="cat-pill" style="font-size:11px;">${catLabel}</span>
+                ${phaseBadge}
+                ${countdownHtml}
               </div>
+              <h3 class="watch-title">${escapeHtml(w.title)}</h3>
+              <p class="watch-window-label">Window: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Upcoming')}</strong> ${w.detected_deadline ? `&bull; Deadline: <strong style="color:#f59e0b;">${escapeHtml(w.detected_deadline)}</strong>` : ''}</p>
             </div>
-            <span class="status-badge badge-${escapeHtml(w.status)}">${formatStatusLabel(w.status)}</span>
-          </div>
-
-          <div class="watch-context">
-            <strong>💬 AI Chat Planning Context:</strong> ${escapeHtml(w.chat_context)}
-          </div>
-
-          <div class="watch-meta">
-            <span>🔗 <strong>Monitored URL:</strong> ${
-              w.target_url
-                ? `<a href="${escapeHtml(w.target_url.replace(/^http:\/\/localhost:\d+/, window.location.origin))}" target="_blank">${escapeHtml(w.target_url.replace(/^http:\/\/localhost:\d+/, window.location.origin))}</a>`
-                : 'Date-only Reminder'
-            }</span>
-            <span>⏱ <strong>Last Checked:</strong> ${escapeHtml(formatTime(w.last_checked_at))}</span>
-            <span>⏭ <strong>Next Poll (poll_after):</strong> ${escapeHtml(formatPollAfter(w.poll_after))}</span>
-            <span>📜 <strong>Oracle Records:</strong> ${oracleCount}</span>
-            ${
-              w.detected_deadline
-                ? `<span style="color:#34d399;">📅 <strong>Detected Deadline:</strong> ${escapeHtml(w.detected_deadline)}</span>`
-                : ''
-            }
-          </div>
-
-          <div class="watch-summary">
-            <strong>Resolution Engine Verdict:</strong> ${escapeHtml(w.last_status_summary || 'Pending check')}
-          </div>
-
-          <div class="watch-footer">
-            <div class="channel-tags">
-              <span class="channel-tag">${w.is_auto_resolve ? '🤖 Auto-Resolve ON' : '⚠️ Auto-Resolve OFF'}</span>
-              ${(w.notify_channels || [])
-                .map((ch) => `<span class="channel-tag">🔔 ${escapeHtml(ch.toUpperCase())}</span>`)
-                .join('')}
-              ${
-                w.recipient_email && w.recipient_email !== 'student@university.edu'
-                  ? `<span class="channel-tag">✉️ ${escapeHtml(w.recipient_email)}</span>`
-                  : `<span class="channel-tag" style="color:#fbbf24;">⚠️ Email Unbound</span>`
-              }
-            </div>
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-              ${applyButtonHtml}
-              <a class="btn btn-sm btn-secondary" href="/api/watches/${encodeURIComponent(w.id)}/calendar.ics" style="text-decoration:none;">
-                📅 Calendar (.ics)
-              </a>
-              <button type="button" class="btn btn-sm btn-secondary" data-check-watch="${escapeHtml(w.id)}">
-                🔍 Check Webpage Now
+            <div class="watch-card-menu">
+              <button type="button" class="btn btn-sm btn-secondary btn-check-now" data-watch-id="${w.id}" title="Trigger check immediately">
+                Check Now
               </button>
-              <button type="button" class="btn btn-sm btn-secondary" data-delete-watch="${escapeHtml(w.id)}">
-                🗑
+              <button type="button" class="btn btn-sm btn-danger btn-delete-watch" data-watch-id="${w.id}" title="Delete watch">
+                &times;
               </button>
             </div>
           </div>
-        </article>
+
+          ${checklistHtml}
+
+          <div class="cal-btn-group">
+            <a class="btn-cal-small" href="${googleCalUrl}" target="_blank">🗓️ Google Calendar</a>
+            <a class="btn-cal-small" href="${icsDownloadUrl}" download="${w.id}.ics">📥 Apple / Outlook (.ics)</a>
+            ${w.target_url ? `<a class="btn-cal-small" href="${escapeHtml(w.target_url)}" target="_blank" style="color:#38bdf8;">🔗 Official Site &nearr;</a>` : ''}
+          </div>
+
+          <div class="watch-card-footer" style="margin-top:10px;">
+            <span class="footer-meta">Last checked: ${formatTime(w.last_checked_at)}</span>
+            <span class="footer-meta">Alerts: ${(w.notify_channels || []).join(', ')}</span>
+          </div>
+        </div>
       `;
     })
     .join('');
 
-  container.querySelectorAll('[data-check-watch]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-check-watch');
-      btn.disabled = true;
-      btn.textContent = 'Checking...';
-      await fetch(`/api/watches/${encodeURIComponent(id)}/check`, { method: 'POST' });
-      await fetchOverview();
+  // Attach checklist interactive toggle handlers
+  container.querySelectorAll('input[type="checkbox"][data-watch-id]').forEach((chk) => {
+    chk.addEventListener('change', async () => {
+      const watchId = chk.getAttribute('data-watch-id');
+      const itemText = chk.getAttribute('data-item');
+      const completed = chk.checked;
+      const label = chk.closest('.checklist-checkbox-label');
+      if (label) {
+        if (completed) label.classList.add('is-done');
+        else label.classList.remove('is-done');
+      }
+
+      try {
+        await fetch(`/api/watches/${encodeURIComponent(watchId)}/checklist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item: itemText, completed })
+        });
+      } catch (err) {
+        console.error('Checklist update failed', err);
+      }
     });
   });
 
-  container.querySelectorAll('[data-delete-watch]').forEach((btn) => {
+  // Attach Check Now and Delete handlers
+  container.querySelectorAll('.btn-check-now').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-delete-watch');
-      await fetch(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      await fetchOverview();
+      const id = btn.getAttribute('data-watch-id');
+      btn.textContent = 'Checking...';
+      try {
+        await fetch(`/api/watches/${encodeURIComponent(id)}/check`, { method: 'POST' });
+        await fetchOverview();
+      } catch {
+        alert('Check failed');
+      }
+    });
+  });
+
+  container.querySelectorAll('.btn-delete-watch').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-watch-id');
+      if (confirm('Delete this monitored watch?')) {
+        await fetch(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await fetchOverview();
+      }
     });
   });
 }
 
 function renderNotifications() {
   const container = document.getElementById('notificationsContainer');
-  const unreadBadge = document.getElementById('unreadBadge');
+  const badge = document.getElementById('unreadBadge');
   if (!container) return;
 
-  if (unreadBadge) {
-    if (latestState.unread_count > 0) {
-      unreadBadge.textContent = `${latestState.unread_count} new`;
-      unreadBadge.classList.remove('hidden');
+  const list = latestState.notifications || [];
+  const unread = list.filter((n) => !n.is_read).length;
+
+  if (badge) {
+    if (unread > 0) {
+      badge.textContent = `${unread} new`;
+      badge.classList.remove('hidden');
     } else {
-      unreadBadge.classList.add('hidden');
+      badge.classList.add('hidden');
     }
   }
 
-  if (latestState.notifications.length === 0) {
-    container.innerHTML = `<div class="muted">No alerts dispatched yet. Flip one of the Simulated Scholarship Portals above to <strong>Open</strong> to trigger multi-channel notifications!</div>`;
+  if (list.length === 0) {
+    container.innerHTML = '<p class="empty-state">No alerts in your private feed yet.</p>';
     return;
   }
 
-  container.innerHTML = latestState.notifications
+  container.innerHTML = list
+    .slice(0, 15)
     .map((n) => {
-      const isEmailPreview = n.channel === 'email';
-      const previewLink = isEmailPreview
-        ? `<a href="/api/notifications/${encodeURIComponent(n.id)}/email-preview" target="_blank" style="color:#38bdf8; font-weight:600; text-decoration:none; font-size:12px;">✉️ View Rendered HTML Email ↗</a>`
-        : n.preview_url
-          ? `<a href="${escapeHtml(n.preview_url)}" target="_blank" style="color:#34d399; font-weight:600; text-decoration:none; font-size:12px;">Open Portal Link ↗</a>`
-          : '';
-
+      const chipClass = n.delivery_status === 'opened' ? 'opened' : (n.delivery_status === 'delivered' ? 'delivered' : 'simulated');
       return `
-        <div class="notif-item ${!n.is_read ? 'unread' : ''}">
-          <div class="notif-top">
-            <span class="notif-channel">${escapeHtml(n.channel)} • ${escapeHtml(n.delivery_status)}</span>
-            <span style="font-size:11px; color:#94a3b8;">${escapeHtml(formatTime(n.created_at))}</span>
-          </div>
-          <div style="font-weight:700; margin-bottom:4px; color:#f8fafc;">${escapeHtml(n.subject)}</div>
-          <div style="font-size:12px; color:#cbd5e1; white-space:pre-line; margin-bottom:6px;">${escapeHtml(n.message)}</div>
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:11px; color:#94a3b8;">To: ${escapeHtml(n.recipient || 'User')}</span>
-            ${previewLink}
-          </div>
+      <div class="notification-item ${n.is_read ? '' : 'unread'}" data-notif-id="${n.id}">
+        <div class="notif-header">
+          <span class="delivery-chip ${chipClass}">${escapeHtml(n.delivery_status || 'delivered')}</span>
+          <span class="notif-channel">${escapeHtml(n.channel)}</span>
+          <span class="notif-time">${formatTime(n.created_at)}</span>
         </div>
-      `;
+        <div class="notif-title">${escapeHtml(n.subject)}</div>
+        <div class="notif-msg">${escapeHtml(n.message)}</div>
+      </div>
+    `;
     })
     .join('');
+
+  container.querySelectorAll('.notification-item.unread').forEach((item) => {
+    item.addEventListener('click', async () => {
+      const id = item.getAttribute('data-notif-id');
+      await fetch(`/api/notifications/${encodeURIComponent(id)}/open`, { method: 'POST' });
+      item.classList.remove('unread');
+    });
+  });
 }
 
 function renderChannels() {
   const container = document.getElementById('channelsConfigContainer');
   if (!container) return;
 
-  const channelLabels = {
-    in_app: '🖥️ In-App Web Dashboard',
-    email: '✉️ Email Notifications',
-    slack: '💬 Slack Webhook',
-    discord: '🎮 Discord Webhook',
-    telegram: '✈️ Telegram Bot Alert',
-    whatsapp: '📱 WhatsApp / SMS Webhook'
-  };
+  const channels = latestState.channels || [];
+  if (channels.length === 0) {
+    container.innerHTML = '<p class="empty-state">Loading channels...</p>';
+    return;
+  }
 
-  container.innerHTML = latestState.channels
+  container.innerHTML = channels
     .map((ch) => {
-      let configFieldHtml = '';
-      if (ch.channel === 'email') {
-        const currentEmail =
-          ch.config.default_recipient && ch.config.default_recipient !== 'student@university.edu'
-            ? ch.config.default_recipient
-            : '';
-        configFieldHtml = `<input class="channel-input" data-cfg-key="default_recipient" placeholder="you@example.com" value="${escapeHtml(currentEmail)}" />`;
-      } else if (ch.channel === 'slack' || ch.channel === 'discord') {
-        configFieldHtml = `<input class="channel-input" data-cfg-key="webhook_url" placeholder="https://hooks.slack.com/services/... (optional for sandbox)" value="${escapeHtml(ch.config.webhook_url || '')}" />`;
-      } else if (ch.channel === 'telegram') {
-        configFieldHtml = `<input class="channel-input" data-cfg-key="chat_id" placeholder="Telegram Chat ID (e.g. @student_alerts)" value="${escapeHtml(ch.config.chat_id || '')}" />`;
-      } else if (ch.channel === 'whatsapp') {
-        configFieldHtml = `<input class="channel-input" data-cfg-key="phone_number" placeholder="WhatsApp number (+1555...)" value="${escapeHtml(ch.config.phone_number || '+15550192834')}" />`;
-      }
+      const isEnabled = Boolean(ch.enabled);
+      let desc = '';
+      if (ch.channel === 'email') desc = ch.config?.default_recipient ? `Default: ${escapeHtml(ch.config.default_recipient)}` : 'Recipient email not set';
+      else if (ch.channel === 'in_app') desc = 'Real-time in-browser dashboard stream';
+      else if (ch.channel === 'web_push') desc = 'Browser Push Notifications (VAPID ES256)';
+      else desc = ch.config?.webhook_url ? 'Webhook connected' : 'Webhook URL not configured';
 
       return `
-        <div class="channel-item" data-channel-card="${escapeHtml(ch.channel)}">
-          <div class="channel-row">
-            <strong>${channelLabels[ch.channel] || ch.channel}</strong>
-            <label style="font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer;">
-              <input type="checkbox" data-channel-toggle="${escapeHtml(ch.channel)}" ${ch.enabled ? 'checked' : ''} />
-              ${ch.enabled ? 'Enabled' : 'Disabled'}
-            </label>
-          </div>
-          ${
-            configFieldHtml
-              ? `<div style="display:flex; gap:6px; margin-top:6px;">
-                   ${configFieldHtml}
-                   <button type="button" class="btn btn-sm btn-secondary" data-save-channel="${escapeHtml(ch.channel)}">Save</button>
-                 </div>`
-              : ''
-          }
+      <div class="channel-row">
+        <div>
+          <strong style="text-transform:capitalize;font-size:13px;">${escapeHtml(ch.channel.replace('_', ' '))}</strong>
+          <div style="font-size:11.5px;color:var(--text-muted);">${desc}</div>
         </div>
-      `;
+        <label class="switch">
+          <input type="checkbox" data-channel="${ch.channel}" ${isEnabled ? 'checked' : ''} />
+          <span class="slider"></span>
+        </label>
+      </div>
+    `;
     })
     .join('');
 
-  container.querySelectorAll('[data-channel-toggle]').forEach((checkbox) => {
-    checkbox.addEventListener('change', async () => {
-      const chName = checkbox.getAttribute('data-channel-toggle');
-      const card = container.querySelector(`[data-channel-card="${chName}"]`);
-      const input = card?.querySelector('[data-cfg-key]');
-      const existing = latestState.channels.find((c) => c.channel === chName);
-      const nextConfig = { ...(existing?.config || {}) };
-      if (input) {
-        nextConfig[input.getAttribute('data-cfg-key')] = input.value;
-      }
+  container.querySelectorAll('input[data-channel]').forEach((chk) => {
+    chk.addEventListener('change', async () => {
+      const channel = chk.getAttribute('data-channel');
+      const enabled = chk.checked;
       await fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: chName, enabled: checkbox.checked, config: nextConfig })
+        body: JSON.stringify({ channel, enabled })
       });
       await fetchOverview();
     });
   });
+}
 
-  container.querySelectorAll('[data-save-channel]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const chName = btn.getAttribute('data-save-channel');
-      const card = container.querySelector(`[data-channel-card="${chName}"]`);
-      const checkbox = card?.querySelector('[data-channel-toggle]');
-      const input = card?.querySelector('[data-cfg-key]');
-      const existing = latestState.channels.find((c) => c.channel === chName);
-      const nextConfig = { ...(existing?.config || {}) };
-      if (input) {
-        nextConfig[input.getAttribute('data-cfg-key')] = input.value;
+// Living countdown clock updater (ticks every 1000ms)
+function startLivingTimers() {
+  setInterval(() => {
+    document.querySelectorAll('.countdown-meter[data-target-date]').forEach((el) => {
+      const dateIso = el.getAttribute('data-target-date');
+      const cd = calculateCountdown(dateIso);
+      if (cd) {
+        if (cd.expired) {
+          el.className = 'countdown-meter live';
+          el.textContent = '🟢 Portal Open!';
+        } else {
+          el.textContent = `⏳ ${cd.text}`;
+          if (cd.days <= 3) el.classList.add('urgent');
+        }
       }
-      btn.textContent = 'Saved!';
-      await fetch('/api/channels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: chName, enabled: Boolean(checkbox?.checked), config: nextConfig })
-      });
-      setTimeout(() => fetchOverview(), 400);
     });
-  });
+  }, 1000);
 }
 
-function renderCheckLogs() {
-  const container = document.getElementById('checkLogsContainer');
-  if (!container) return;
-
-  if (latestState.check_logs.length === 0) {
-    container.innerHTML = `<div class="muted">No page scrapes logged yet. Click <strong>Check All Pages Now</strong> to run live checks.</div>`;
-    return;
-  }
-
-  container.innerHTML = latestState.check_logs
-    .map((log) => {
-      const watch = latestState.watches.find((w) => w.id === log.watch_id);
-      const badge = log.is_open
-        ? `<span style="color:#34d399; font-weight:700;">🟢 OPEN</span>`
-        : !log.entity_validated
-          ? `<span style="color:#f87171; font-weight:700;">⚠️ Entity Mismatch</span>`
-          : `<span style="color:#94a3b8; font-weight:600;">🔒 Closed</span>`;
-      const cacheBadge = log.cache_hit ? '⚡ 120s Cache Hit' : '🌐 Live Scrape';
-      const entityBadge = log.entity_validated ? '✅ Entity Verified' : '❌ Entity Mismatch';
-      return `
-        <div class="log-item">
-          <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
-            <strong>${escapeHtml(watch ? watch.title : log.watch_id)}</strong>
-            ${badge}
-          </div>
-          <div style="color:#cbd5e1;">${escapeHtml(log.summary)}</div>
-          <div style="font-size:11px; color:#64748b; margin-top:4px;">
-            HTTP ${log.http_status || 'N/A'} • ${cacheBadge} • ${entityBadge} • ${escapeHtml(formatTime(log.checked_at))}
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-}
-
-// Wire up interactions on DOMContentLoaded
-window.addEventListener('DOMContentLoaded', () => {
-  setupDialogLightDismissFallbacks();
-  fetchOverview();
-
-  // Filter tabs
+function setupFilterTabs() {
   document.querySelectorAll('.filter-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.filter-tab').forEach((t) => t.classList.remove('active'));
@@ -439,164 +447,102 @@ window.addEventListener('DOMContentLoaded', () => {
       renderWatches();
     });
   });
+}
 
-  // Preset Chat Transcripts
-  const presets = {
-    'end-of-month': `User: We're planning my graduate school funding for next fall. I really want to apply for the Horizon Global AI Scholarship, but the portal says applications won't open until the end of this month.\nAssistant: Let's polish your research proposal now, and I'll register a PulseRemind watch for the Horizon Global AI Scholarship so you get alerted the moment it opens at the end of the month!`,
-    'early-next-year': `User: What about UK fellowships? The Commonwealth Emerging Leaders Grant covers full tuition, right?\nAssistant: Yes! However, the 2027 cycle for the Commonwealth Emerging Leaders Grant doesn't open until early next year (January 2027). I'll schedule a hibernating web monitor for early next year so you don't miss the opening day.`,
-    'multi': `User: Let's track both: the Horizon Global AI Fellowship opening at the end of this month, and the Gates Innovation Graduate Scholarship opening early next year.\nAssistant: Got it! Setting up web-monitored reminders for both scholarships right now.`
-  };
-
-  document.querySelectorAll('[data-preset]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const key = btn.getAttribute('data-preset');
-      const textarea = document.getElementById('chatTranscriptInput');
-      if (textarea && presets[key]) {
-        textarea.value = presets[key];
-      }
-    });
-  });
-
-  // Chat Extract Form
-  const extractForm = document.getElementById('chatExtractForm');
-  extractForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const transcript = document.getElementById('chatTranscriptInput').value;
-    const recipientEmail = document.getElementById('extractEmailInput').value;
-    const submitBtn = document.getElementById('extractSubmitBtn');
-    const resultBox = document.getElementById('extractResultBox');
-
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Analyzing Chat & Registering Watches...';
-
-    const res = await fetch('/api/chat/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        transcript,
-        auto_create: true,
-        recipient_email: recipientEmail
-      })
-    });
-    const data = await res.json();
-
-    submitBtn.disabled = false;
-    submitBtn.textContent = '✨ Extract & Schedule Reminders from Chat';
-
-    if (resultBox) {
-      resultBox.classList.remove('hidden');
-      const names = (data.created_watches || []).map((w) => `"${w.title}" (${w.window_label})`).join(', ');
-      resultBox.innerHTML = `✅ <strong>MCP Tool <code>extract_watches_from_chat</code> succeeded!</strong> Created ${data.created_watches?.length || 0} smart watch(es): <strong>${escapeHtml(names)}</strong>.`;
-    }
-    await fetchOverview();
-  });
-
-  // Check All Pages button
-  const checkAllBtn = document.getElementById('checkAllNowBtn');
-  checkAllBtn?.addEventListener('click', async () => {
-    checkAllBtn.disabled = true;
-    checkAllBtn.textContent = '⏳ Scraping All Pages...';
-    await fetch('/api/watches/check-all', { method: 'POST' });
-    checkAllBtn.disabled = false;
-    checkAllBtn.textContent = '🔄 Check All Pages Now';
-    await fetchOverview();
-  });
-
-  // Mark notifications read
-  document.getElementById('markReadBtn')?.addEventListener('click', async () => {
-    await fetch('/api/notifications/read-all', { method: 'POST' });
-    await fetchOverview();
-  });
-
-  // Send Test Alert across enabled channels
-  const testChannelsBtn = document.getElementById('testChannelsBtn');
-  testChannelsBtn?.addEventListener('click', async () => {
-    testChannelsBtn.disabled = true;
-    testChannelsBtn.textContent = 'Sending...';
-    await fetch('/api/channels/test', { method: 'POST' });
-    testChannelsBtn.disabled = false;
-    testChannelsBtn.textContent = 'Send Test Alert';
-    await fetchOverview();
-  });
-
-  // Create Watch Modal Dialog (always open with showModal() per light-dismiss-a-dialog guide)
+function setupModals() {
+  // Create Watch Modal
   const createDialog = document.getElementById('createWatchDialog');
-  document.getElementById('openCreateModalBtn')?.addEventListener('click', () => {
-    createDialog?.showModal();
-  });
-  document.getElementById('closeCreateModalBtn')?.addEventListener('click', () => {
-    createDialog?.close();
-  });
-  document.getElementById('cancelCreateModalBtn')?.addEventListener('click', () => {
-    createDialog?.close();
-  });
+  document.getElementById('openCreateModalBtn')?.addEventListener('click', () => createDialog?.showModal());
+  document.getElementById('closeCreateModalBtn')?.addEventListener('click', () => createDialog?.close());
+  document.getElementById('cancelCreateModalBtn')?.addEventListener('click', () => createDialog?.close());
 
   document.getElementById('createWatchForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
-    const channels = Array.from(form.querySelectorAll('input[name="channel"]:checked')).map((el) => el.value);
+    const data = {
+      title: form.title.value,
+      category: form.category.value,
+      window_start_date: form.window_start_date.value || undefined,
+      target_url: form.target_url.value || undefined,
+      chat_context: form.chat_context.value,
+      recipient_email: form.recipient_email.value || undefined,
+      rrule: form.rrule.value || undefined
+    };
 
     await fetch('/api/watches', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: form.title.value,
-        window_label: form.window_label.value,
-        window_start_date: form.window_start_date.value,
-        target_url: form.target_url.value || `${window.location.origin}/demo/scholarships/global-ai-fellowship`,
-        condition_text: form.condition_text.value,
-        chat_context: form.chat_context.value,
-        recipient_email: form.recipient_email.value,
-        notify_channels: channels.length ? channels : ['in_app', 'email'],
-        source_chat_client: 'Dashboard Manual Watch'
-      })
+      body: JSON.stringify(data)
     });
-
-    form.reset();
     createDialog?.close();
+    form.reset();
     await fetchOverview();
   });
 
-  // Register W3C Service Worker for Web Push Notifications
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  }
-
-  // MCP Config Modal Dialog (always open with showModal() per light-dismiss-a-dialog guide)
+  // MCP Config Modal
   const mcpDialog = document.getElementById('mcpConfigDialog');
-  const mcpSnippet = document.getElementById('mcpConfigSnippet');
-  const liveOrigin = window.location.origin.includes('localhost')
-    ? 'https://pulse-remind.onrender.com'
-    : window.location.origin;
-
-  if (mcpSnippet) {
-    mcpSnippet.textContent = JSON.stringify(
-      {
-        mcpServers: {
-          pulseremind: {
-            type: 'http',
-            url: `${liveOrigin}/mcp`
-          }
-        }
-      },
-      null,
-      2
-    );
-  }
-  const liveMcpEl = document.getElementById('liveMcpEndpointText');
-  if (liveMcpEl) liveMcpEl.textContent = `${liveOrigin}/mcp`;
-  const liveOpenApiEl = document.getElementById('liveOpenApiText');
-  if (liveOpenApiEl) liveOpenApiEl.textContent = `${liveOrigin}/api/openapi.json`;
-  const liveIcsEl = document.getElementById('liveIcsFeedText');
-  if (liveIcsEl) liveIcsEl.textContent = `${liveOrigin}/api/calendar/all.ics`;
-
   document.getElementById('openMcpModalBtn')?.addEventListener('click', () => {
+    const origin = window.location.origin;
+    const snippet = {
+      mcpServers: {
+        pulseremind: {
+          command: 'npx',
+          args: ['-y', 'pulseremind-ai-chat-tools']
+        }
+      }
+    };
+    const codeEl = document.getElementById('mcpConfigSnippet');
+    if (codeEl) codeEl.textContent = JSON.stringify(snippet, null, 2);
     mcpDialog?.showModal();
   });
-  document.getElementById('closeMcpModalBtn')?.addEventListener('click', () => {
-    mcpDialog?.close();
+  document.getElementById('closeMcpModalBtn')?.addEventListener('click', () => mcpDialog?.close());
+  document.getElementById('doneMcpModalBtn')?.addEventListener('click', () => mcpDialog?.close());
+
+  // Session / Identity Modal
+  const sessionDialog = document.getElementById('sessionDialog');
+  document.getElementById('openSessionBtn')?.addEventListener('click', () => sessionDialog?.showModal());
+  document.getElementById('closeSessionModalBtn')?.addEventListener('click', () => sessionDialog?.close());
+
+  document.getElementById('switchTenantForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const val = document.getElementById('tenantEmailLogin').value.trim();
+    if (!val) return;
+    await fetch('/api/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(val.includes('@') ? { email: val } : { tenant_id: val })
+    });
+    sessionDialog?.close();
+    await fetchOverview();
   });
-  document.getElementById('doneMcpModalBtn')?.addEventListener('click', () => {
-    mcpDialog?.close();
+
+  document.getElementById('logoutSessionBtn')?.addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    sessionDialog?.close();
+    await fetchOverview();
   });
+
+  // Browser Push Activation
+  document.getElementById('browserPushQuickBtn')?.addEventListener('click', async () => {
+    if (!('Notification' in window)) {
+      alert('Browser notifications are not supported in this browser.');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      alert('Browser Push Notifications enabled!');
+    }
+  });
+
+  document.getElementById('markReadBtn')?.addEventListener('click', async () => {
+    await fetch('/api/notifications/read-all', { method: 'POST' });
+    await fetchOverview();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  fetchOverview();
+  setupFilterTabs();
+  setupModals();
+  startLivingTimers();
 });

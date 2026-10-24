@@ -59,6 +59,35 @@ export class WatchService {
     return this.repo.delete(id, tenantId);
   }
 
+  toggleChecklistItem(
+    watchId: string,
+    itemText: string,
+    completed: boolean,
+    tenantId?: string
+  ): WatchRecord | null {
+    const watch = this.getWatchById(watchId, tenantId);
+    if (!watch) return null;
+    const meta = { ...(watch.resolution_config?.provider_metadata || {}) };
+    const completedItems = new Set<string>(
+      Array.isArray(meta.checklist_completed) ? meta.checklist_completed : []
+    );
+    if (completed) {
+      completedItems.add(itemText);
+    } else {
+      completedItems.delete(itemText);
+    }
+    meta.checklist_completed = Array.from(completedItems);
+    const updatedResolutionConfig = {
+      ...(watch.resolution_config || {}),
+      provider_metadata: meta
+    };
+    return this.updateWatchFields(
+      watchId,
+      { resolution_config: updatedResolutionConfig as any },
+      watch.tenant_id
+    );
+  }
+
   listCheckLogs(watchId?: string, limit = 30, tenantId?: string): CheckLogRecord[] {
     return this.repo.listCheckLogs(watchId, limit, tenantId);
   }

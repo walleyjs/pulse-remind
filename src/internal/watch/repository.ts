@@ -609,6 +609,7 @@ export class WatchRepository {
       poll_after: number;
       notify_channels: NotificationChannelType[];
       recipient_email: string | null;
+      resolution_config: ResolutionConfig;
     }>,
     tenantId?: string
   ): WatchRecord | null {
@@ -630,6 +631,7 @@ export class WatchRepository {
             poll_after = ?,
             notify_channels = ?,
             recipient_email = ?,
+            resolution_config = ?,
             version = ?
         WHERE id = ?
       `).run(
@@ -644,6 +646,7 @@ export class WatchRepository {
         updates.poll_after ?? existing.poll_after,
         JSON.stringify(updates.notify_channels ?? existing.notify_channels),
         updates.recipient_email !== undefined ? updates.recipient_email : existing.recipient_email,
+        JSON.stringify(updates.resolution_config ?? existing.resolution_config ?? {}),
         nextVersion,
         id
       );
