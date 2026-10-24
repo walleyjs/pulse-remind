@@ -147,11 +147,23 @@ export function buildWatchIcsFeed(watches: WatchRecord[], baseUrl: string): stri
       `DTEND:${endUtc}`,
       `SUMMARY:${summary}`,
       `DESCRIPTION:${description}`,
-      `URL:${escapeIcsText(url)}`,
+      `URL:${escapeIcsText(url)}`
+    );
+
+    if (w.rrule) {
+      lines.push(`RRULE:${w.rrule}`);
+    }
+
+    lines.push(
       'BEGIN:VALARM',
       'TRIGGER:-PT24H',
       'ACTION:DISPLAY',
       `DESCRIPTION:PulseRemind 24h Alert: ${summary}`,
+      'END:VALARM',
+      'BEGIN:VALARM',
+      'TRIGGER:-PT1H',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:PulseRemind 1h Alert: ${summary}`,
       'END:VALARM',
       'BEGIN:VALARM',
       'TRIGGER:-PT15M',

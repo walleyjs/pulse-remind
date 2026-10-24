@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { URL } from 'node:url';
 import { config } from '../../config/index.ts';
 import { demoPortalService } from '../../internal/demo/service.ts';
@@ -12,6 +13,8 @@ import type { NotificationChannelType, WatchRecord } from '../../internal/watch/
 import { watchService } from '../../internal/watch/service.ts';
 import { initDatabase } from '../db/bootstrap.ts';
 import { cloudDatabaseSync } from '../db/cloud-sync.ts';
+import { outboxProcessor } from '../db/outbox.ts';
+import { extractTenantId, createOAuthJwtToken } from '../tenant/tenant.ts';
 import { buildWatchIcsFeed } from '../calendar/ics.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
@@ -56,6 +59,9 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
 
 export function createAppServer(): http.Server {
   initDatabase(true);
+  if (config.dbPath !== ':memory:') {
+    outboxProcessor.start(5000);
+  }
 
   return http.createServer(async (req, res) => {
     try {
@@ -284,24 +290,30 @@ export function createAppServer(): http.Server {
       if (pathname === '/oauth/token' && req.method === 'POST') {
         const body = await readJsonBody(req).catch(() => ({} as Record<string, unknown>));
         const codeStr = typeof body.code === 'string' ? body.code : '';
-        let tokenSuffix = 'live';
+        let sub = 'tenant_oauth_user';
+        let email: string | undefined = undefined;
+
         if (codeStr.startsWith('prm_oauth_code_') && codeStr !== 'prm_oauth_code_live') {
-          tokenSuffix = codeStr.replace('prm_oauth_code_', '');
+          const suffix = codeStr.replace('prm_oauth_code_', '');
           try {
-            const decodedEmail = Buffer.from(tokenSuffix, 'base64url').toString('utf-8');
+            const decodedEmail = Buffer.from(suffix, 'base64url').toString('utf-8');
             if (decodedEmail.includes('@')) {
-              notificationService.setSavedDefaultEmail(decodedEmail);
+              email = decodedEmail.trim();
+              sub = `tenant_${crypto.createHash('sha256').update(email).digest('hex').slice(0, 16)}`;
+              notificationService.setSavedDefaultEmail(email, sub);
             }
           } catch {
             // ignore malformed suffix
           }
         }
+
+        const accessToken = createOAuthJwtToken(sub, email);
         sendJson(res, 200, {
-          access_token: `prm_live_token_${tokenSuffix}`,
+          access_token: accessToken,
           token_type: 'Bearer',
           expires_in: 86400 * 30,
-          refresh_token: `prm_live_refresh_${tokenSuffix}`,
-          scope: 'mcp:tools'
+          refresh_token: `prm_live_refresh_${sub}`,
+          scope: 'mcp:tools read write'
         });
         return;
       }
@@ -405,22 +417,35 @@ export function createAppServer(): http.Server {
       }
 
       if (pathname === '/mcp' && req.method === 'POST') {
-        const body = await readJsonBody(req);
-        const id = (body.id as string | number | null) ?? null;
+        let body: Record<string, unknown>;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          sendJson(res, 400, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error' }
+          });
+          return;
+        }
+
+        const id = (body && typeof body === 'object' && body.id !== undefined) ? (body.id as string | number | null) : null;
+
+        // JSON-RPC 2.0 validation: jsonrpc version must be '2.0', method must be string
+        if (!body || typeof body !== 'object' || body.jsonrpc !== '2.0' || typeof body.method !== 'string' || !body.method.trim()) {
+          sendJson(res, 400, {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32600, message: 'Invalid Request', data: 'Expected JSON-RPC 2.0 object with method string' }
+          });
+          return;
+        }
+
         const method = String(body.method || '');
         const params = (body.params as Record<string, unknown>) || {};
 
-        // Resolve user email from OAuth Bearer token or ?email= query param on /mcp
-        let oauthEmail: string | null = (parsedUrl.searchParams.get('email') || '').trim() || null;
-        const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-        if (!oauthEmail && authHeader.startsWith('prm_live_token_') && authHeader !== 'prm_live_token_live') {
-          try {
-            const decoded = Buffer.from(authHeader.replace('prm_live_token_', ''), 'base64url').toString('utf-8');
-            if (decoded.includes('@')) oauthEmail = decoded;
-          } catch {
-            // ignore
-          }
-        }
+        // Multi-tenant resolution: derive tenantId and userEmail from OAuth Bearer, headers, or query
+        const { tenantId, userEmail: oauthEmail } = extractTenantId(req.headers, parsedUrl.searchParams);
 
         if (method === 'initialize') {
           const requestedProtocol =
@@ -430,47 +455,185 @@ export function createAppServer(): http.Server {
             id,
             result: {
               protocolVersion: requestedProtocol,
-              capabilities: { tools: { listChanged: false } },
+              capabilities: {
+                tools: { listChanged: true },
+                resources: { subscribe: true, listChanged: true }
+              },
               serverInfo: { name: 'pulseremind-mcp-server', version: '1.0.0' }
             }
           });
           return;
         }
+
         if (method.startsWith('notifications/')) {
           res.writeHead(202, { 'Access-Control-Allow-Origin': '*' });
           res.end();
           return;
         }
+
         if (method === 'ping') {
           sendJson(res, 200, { jsonrpc: '2.0', id, result: {} });
           return;
         }
+
         if (method === 'tools/list') {
           sendJson(res, 200, { jsonrpc: '2.0', id, result: { tools: MCP_TOOLS } });
           return;
         }
+
         if (method === 'resources/list') {
-          sendJson(res, 200, { jsonrpc: '2.0', id, result: { resources: [] } });
-          return;
-        }
-        if (method === 'prompts/list') {
-          sendJson(res, 200, { jsonrpc: '2.0', id, result: { prompts: [] } });
-          return;
-        }
-        if (method === 'tools/call') {
-          const toolName = String(params.name || '');
-          const toolArgs = (params.arguments as Record<string, unknown>) || {};
-          const output = await executeMcpTool(toolName, toolArgs, baseUrl, oauthEmail);
+          const watches = watchService.listWatches('all', tenantId);
           sendJson(res, 200, {
             jsonrpc: '2.0',
             id,
             result: {
-              content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-              structured: output
+              resources: [
+                {
+                  uri: 'pulseremind://watches',
+                  name: 'Active Watches Collection',
+                  description: `All monitored event watches for tenant ${tenantId}`,
+                  mimeType: 'application/json'
+                },
+                ...watches.map((w) => ({
+                  uri: `pulseremind://watches/${w.id}`,
+                  name: w.title,
+                  description: `Status: ${w.status} | Trigger: ${w.trigger_type} | Deadline: ${w.detected_deadline || 'none'}`,
+                  mimeType: 'application/json'
+                }))
+              ]
             }
           });
           return;
         }
+
+        if (method === 'resources/read') {
+          const uri = typeof params.uri === 'string' ? params.uri.trim() : '';
+          if (!uri) {
+            sendJson(res, 400, {
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32602, message: 'Invalid params: uri is required' }
+            });
+            return;
+          }
+          if (uri === 'pulseremind://watches') {
+            const watches = watchService.listWatches('all', tenantId);
+            sendJson(res, 200, {
+              jsonrpc: '2.0',
+              id,
+              result: {
+                contents: [
+                  {
+                    uri,
+                    mimeType: 'application/json',
+                    text: JSON.stringify(watches, null, 2)
+                  }
+                ]
+              }
+            });
+            return;
+          }
+          if (uri.startsWith('pulseremind://watches/')) {
+            const watchId = uri.replace('pulseremind://watches/', '').trim();
+            const watch = watchService.getWatchById(watchId, tenantId);
+            if (!watch) {
+              sendJson(res, 404, {
+                jsonrpc: '2.0',
+                id,
+                error: { code: -32602, message: `Resource not found: ${uri}` }
+              });
+              return;
+            }
+            const logs = watchService.listCheckLogs(watch.id, 10, tenantId);
+            sendJson(res, 200, {
+              jsonrpc: '2.0',
+              id,
+              result: {
+                contents: [
+                  {
+                    uri,
+                    mimeType: 'application/json',
+                    text: JSON.stringify({ watch, recent_check_logs: logs }, null, 2)
+                  }
+                ]
+              }
+            });
+            return;
+          }
+          sendJson(res, 404, {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32602, message: `Unsupported resource URI: ${uri}` }
+          });
+          return;
+        }
+
+        if (method === 'resources/subscribe' || method === 'resources/unsubscribe') {
+          const uri = typeof params.uri === 'string' ? params.uri.trim() : '';
+          if (!uri) {
+            sendJson(res, 400, {
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32602, message: 'Invalid params: uri is required' }
+            });
+            return;
+          }
+          sendJson(res, 200, { jsonrpc: '2.0', id, result: {} });
+          return;
+        }
+
+        if (method === 'prompts/list') {
+          sendJson(res, 200, { jsonrpc: '2.0', id, result: { prompts: [] } });
+          return;
+        }
+
+        if (method === 'tools/call') {
+          const toolName = typeof params.name === 'string' ? params.name.trim() : '';
+          if (!toolName) {
+            sendJson(res, 400, {
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32602, message: 'Invalid params: tool name is required' }
+            });
+            return;
+          }
+          if (!MCP_TOOLS.some((t) => t.name === toolName)) {
+            sendJson(res, 404, {
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32601, message: `Tool not found: ${toolName}` }
+            });
+            return;
+          }
+          const toolArgs = (params.arguments as Record<string, unknown>) || {};
+          try {
+            const output = await executeMcpTool(toolName, toolArgs, baseUrl, oauthEmail, tenantId);
+            sendJson(res, 200, {
+              jsonrpc: '2.0',
+              id,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
+                structured: output
+              }
+            });
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const isParamError =
+              errMsg.toLowerCase().includes('missing required') ||
+              errMsg.toLowerCase().includes('valid recipient_email');
+            sendJson(res, 400, {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: isParamError ? -32602 : -32603,
+                message: errMsg,
+                data: { tool: toolName, tenant_id: tenantId }
+              }
+            });
+          }
+          return;
+        }
+
         sendJson(res, 400, {
           jsonrpc: '2.0',
           id,
@@ -656,6 +819,19 @@ export function createAppServer(): http.Server {
       if (pathname === '/api/notifications/read-all' && req.method === 'POST') {
         notificationService.markAllRead();
         sendJson(res, 200, { success: true });
+        return;
+      }
+
+      const notifStatusMatch = pathname.match(/^\/api\/notifications\/([^/]+)\/(open|ack)$/);
+      if (notifStatusMatch && req.method === 'POST') {
+        const notifId = decodeURIComponent(notifStatusMatch[1]);
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const ok = notificationService.updateDeliveryStatus(notifId, 'opened', tenantId);
+        if (!ok) {
+          sendJson(res, 404, { error: 'Notification not found' });
+          return;
+        }
+        sendJson(res, 200, { success: true, id: notifId, delivery_status: 'opened' });
         return;
       }
 

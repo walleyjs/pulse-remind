@@ -1,10 +1,12 @@
 -- ============================================================================
--- PulseRemind — Supabase PostgreSQL Schema
+-- PulseRemind — Supabase PostgreSQL Schema (Multi-Tenant & Transactional Outbox)
 -- Copy and paste this entire script into the Supabase SQL Editor -> Click "Run"
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.watches (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+  version INTEGER NOT NULL DEFAULT 1,
   title TEXT NOT NULL,
   category TEXT NOT NULL DEFAULT 'scholarship',
   chat_context TEXT NOT NULL,
@@ -37,14 +39,15 @@ CREATE TABLE IF NOT EXISTS public.watches (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_watches_status_pollafter
-  ON public.watches (status, poll_after);
+CREATE INDEX IF NOT EXISTS idx_watches_tenant_status_pollafter
+  ON public.watches (tenant_id, status, poll_after);
 
 CREATE INDEX IF NOT EXISTS idx_watches_canonical_url
   ON public.watches (canonical_url_key);
 
 CREATE TABLE IF NOT EXISTS public.check_logs (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
   watch_id TEXT NOT NULL REFERENCES public.watches(id) ON DELETE CASCADE,
   checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   http_status INTEGER,
@@ -59,8 +62,13 @@ CREATE TABLE IF NOT EXISTS public.check_logs (
   next_poll_after BIGINT
 );
 
+CREATE INDEX IF NOT EXISTS idx_check_logs_tenant
+  ON public.check_logs (tenant_id, checked_at);
+
 CREATE TABLE IF NOT EXISTS public.notifications (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+  version INTEGER NOT NULL DEFAULT 1,
   watch_id TEXT NOT NULL,
   watch_title TEXT NOT NULL,
   channel TEXT NOT NULL,
@@ -77,24 +85,53 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX IF NOT EXISTS idx_notifications_tenant
+  ON public.notifications (tenant_id, created_at);
+
 CREATE TABLE IF NOT EXISTS public.channel_configs (
-  channel TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+  channel TEXT NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT true,
   config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, channel)
 );
+
+CREATE TABLE IF NOT EXISTS public.outbox (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+  event_type TEXT NOT NULL,
+  entity_table TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_retry_at BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+  ON public.outbox (status, next_retry_at, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_tenant_entity
+  ON public.outbox (tenant_id, entity_table, entity_id);
 
 -- Disable Row Level Security so PostgREST sync works with publishable or service role keys
 ALTER TABLE public.watches DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.check_logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.channel_configs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.outbox DISABLE ROW LEVEL SECURITY;
 
 -- Grant PostgREST roles read & write permissions
 GRANT ALL ON TABLE public.watches TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.check_logs TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.notifications TO postgres, anon, authenticated, service_role;
 GRANT ALL ON TABLE public.channel_configs TO postgres, anon, authenticated, service_role;
+GRANT ALL ON TABLE public.outbox TO postgres, anon, authenticated, service_role;
 
 -- Reload PostgREST schema cache immediately so /rest/v1/watches is live
 NOTIFY pgrst, 'reload schema';

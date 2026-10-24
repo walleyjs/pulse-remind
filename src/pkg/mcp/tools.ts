@@ -6,6 +6,7 @@ import { resolutionEngine } from '../../internal/resolution/engine.ts';
 import type { NotificationChannelType, TriggerType } from '../../internal/watch/model.ts';
 import { watchService } from '../../internal/watch/service.ts';
 import { buildWatchCalendarLinks } from '../calendar/ics.ts';
+import { DEFAULT_TENANT_ID } from '../tenant/tenant.ts';
 
 export interface McpToolAnnotations {
   title?: string;
@@ -255,7 +256,8 @@ export async function executeMcpTool(
   name: string,
   args: Record<string, unknown>,
   baseUrl = config.cloud.renderExternalUrl || 'http://localhost:3456',
-  oauthEmail?: string | null
+  oauthEmail?: string | null,
+  tenantId = DEFAULT_TENANT_ID
 ): Promise<unknown> {
   switch (name) {
     case 'create_opportunity_watch': {
@@ -281,11 +283,12 @@ export async function executeMcpTool(
           : oauthEmail || undefined;
 
       if (providedEmail) {
-        notificationService.setSavedDefaultEmail(providedEmail);
+        notificationService.setSavedDefaultEmail(providedEmail, tenantId);
       }
 
       const watch = watchService.createWatch({
         title,
+        tenant_id: tenantId,
         category,
         chat_context: chatContext,
         source_chat_client: String(args.source_chat_client || 'MCP AI Assistant'),
@@ -300,7 +303,7 @@ export async function executeMcpTool(
           ? (args.notify_channels as NotificationChannelType[])
           : ['in_app', 'email'],
         recipient_email: providedEmail
-      });
+      }, tenantId);
 
       const calendarLinks = buildWatchCalendarLinks(watch, baseUrl);
       const hasBoundEmail = Boolean(watch.recipient_email && watch.recipient_email !== 'student@university.edu');
@@ -337,7 +340,8 @@ export async function executeMcpTool(
         watch_id: watchId,
         notify_channels: notifyChannels,
         ntfy_topic: ntfyTopic,
-        save_as_default: saveAsDefault
+        save_as_default: saveAsDefault,
+        tenant_id: tenantId
       });
 
       const primaryWatch = updatedWatches[0] || null;
@@ -367,13 +371,13 @@ export async function executeMcpTool(
           : oauthEmail || undefined;
 
       if (providedEmail) {
-        notificationService.setSavedDefaultEmail(providedEmail);
+        notificationService.setSavedDefaultEmail(providedEmail, tenantId);
       }
 
       if (autoCreate) {
         for (const item of extracted) {
           const input = chatExtractorService.toWatchInput(item, providedEmail);
-          createdWatches.push(watchService.createWatch(input));
+          createdWatches.push(watchService.createWatch({ ...input, tenant_id: tenantId }, tenantId));
         }
       }
 
@@ -396,17 +400,20 @@ export async function executeMcpTool(
 
     case 'list_active_watches': {
       const status = args.status ? String(args.status) : 'all';
-      const watches = watchService.listWatches(status);
+      const watches = watchService.listWatches(status, tenantId);
       return {
         count: watches.length,
-        saved_default_email: notificationService.getSavedDefaultEmail(),
+        saved_default_email: notificationService.getSavedDefaultEmail(tenantId),
         watches
       };
     }
 
     case 'check_watch_now': {
-      const watchId = String(args.watch_id || '');
-      const outcome = await resolutionEngine.runWatchCheck(watchId);
+      const watchId = String(args.watch_id || '').trim();
+      if (!watchId) {
+        throw new Error('Missing required argument: watch_id');
+      }
+      const outcome = await resolutionEngine.runWatchCheck(watchId, { tenantId });
       if (!outcome) {
         throw new Error(`Watch "${watchId}" not found.`);
       }
@@ -423,18 +430,21 @@ export async function executeMcpTool(
     }
 
     case 'update_or_cancel_watch': {
-      const watchId = String(args.watch_id || '');
-      const action = String(args.action || '');
+      const watchId = String(args.watch_id || '').trim();
+      const action = String(args.action || '').trim();
+      if (!watchId || !action) {
+        throw new Error('Missing required arguments: watch_id, action');
+      }
       if (action === 'delete') {
-        const deleted = watchService.deleteWatch(watchId);
+        const deleted = watchService.deleteWatch(watchId, tenantId);
         return { success: deleted, watch_id: watchId, action: 'deleted' };
       }
-      const existing = watchService.getWatchById(watchId);
+      const existing = watchService.getWatchById(watchId, tenantId);
       if (!existing) {
         throw new Error(`Watch "${watchId}" not found.`);
       }
       const nextStatus = action === 'pause' ? 'paused' : 'active_monitoring';
-      const updated = watchService.updateWatchFields(watchId, { status: nextStatus });
+      const updated = watchService.updateWatchFields(watchId, { status: nextStatus }, tenantId);
       return { success: true, watch: updated };
     }
 

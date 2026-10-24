@@ -4,13 +4,15 @@ export type { NotificationChannelType };
 
 export interface NotificationRecord {
   id: string;
+  tenant_id: string;
+  version: number;
   watch_id: string;
   watch_title: string;
   channel: NotificationChannelType;
   recipient: string | null;
   subject: string;
   message: string;
-  delivery_status: 'delivered' | 'simulated' | 'failed';
+  delivery_status: 'pending' | 'delivered' | 'opened' | 'simulated' | 'failed';
   preview_url: string | null;
   is_read: boolean;
   attempt_count?: number;
@@ -20,6 +22,7 @@ export interface NotificationRecord {
 }
 
 export interface ChannelConfigRecord {
+  tenant_id: string;
   channel: NotificationChannelType;
   enabled: boolean;
   config: Record<string, string>;

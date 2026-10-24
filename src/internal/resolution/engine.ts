@@ -6,6 +6,8 @@ import { watchRepository, WatchRepository } from '../watch/repository.ts';
 import { getAdapterForWatch } from './adapters/index.ts';
 import type { WatchCheckOutcome } from './types.ts';
 import { normalizeCanonicalUrl } from './validator.ts';
+import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
+import { verifyProbeConsensus } from './consensus.ts';
 
 export class ResolutionEngine {
   private readonly watchRepo: WatchRepository;
@@ -23,9 +25,9 @@ export class ResolutionEngine {
 
   async runWatchCheck(
     watchId: string,
-    options: { bypassCache?: boolean } = {}
+    options: { bypassCache?: boolean; tenantId?: string } = {}
   ): Promise<WatchCheckOutcome | null> {
-    const watch = this.watchRepo.getById(watchId);
+    const watch = this.watchRepo.getById(watchId, options.tenantId);
     if (!watch) return null;
 
     const wasAlreadyOpen = watch.status === 'triggered_open';
@@ -49,49 +51,98 @@ export class ResolutionEngine {
         this.watchRepo.updateEventTiming(watch.id, learnedStart, evaluation.detectedDeadline);
       }
 
-      // 3. Pre-opening schedule optimization for `poll_after` (Octopus engine.rs:96-118)
+      // 3. Adaptive Hazard-Rate Schedule optimization for `poll_after`
       let nextPollAfter = currentUnix + watch.check_interval_minutes * 60;
       const effectiveStartDate = learnedStart || watch.window_start_date;
-      if (!evaluation.isOpen && effectiveStartDate) {
+      if (effectiveStartDate) {
         const startUnix = Math.floor(new Date(effectiveStartDate).getTime() / 1000);
-        if (!isNaN(startUnix) && startUnix > currentUnix + 7 * 86400) {
-          nextPollAfter = startUnix - 3 * 86400;
+        if (!isNaN(startUnix)) {
+          const sched = calculateHazardRateSchedule(startUnix, currentUnix, watch.check_interval_minutes);
+          nextPollAfter = sched.pollAfterUnix;
+        }
+      }
+
+      // 4. Anti-Flap Multi-Probe Consensus Verification on state transitions
+      let finalEvaluation = evaluation;
+      if (evaluation.isOpen !== wasAlreadyOpen && watch.target_url && !options.bypassCache) {
+        try {
+          const confirmEval = await adapter.resolve(watch, true);
+          const consensus = verifyProbeConsensus(evaluation, confirmEval);
+          if (!consensus.confirmed) {
+            const backoffPoll = currentUnix + 30;
+            this.watchRepo.updatePollAfter(watch.id, backoffPoll, consensus.reason, watch.tenant_id);
+            const checkLog = this.watchRepo.insertCheckLog(
+              {
+                watch_id: watch.id,
+                http_status: evaluation.httpStatus,
+                is_open: wasAlreadyOpen,
+                confidence: consensus.confidence,
+                summary: consensus.reason,
+                extracted_snippet: null,
+                page_changed: false,
+                oracle_name: adapter.oracleName,
+                cache_hit: false,
+                entity_validated: true,
+                next_poll_after: backoffPoll
+              },
+              watch.tenant_id
+            );
+            return {
+              watch,
+              evaluation: {
+                ...evaluation,
+                isOpen: wasAlreadyOpen,
+                confidence: consensus.confidence,
+                summary: consensus.reason
+              },
+              checkLog,
+              notificationsDispatched: [],
+              newlyTriggered: false
+            };
+          }
+          finalEvaluation = {
+            ...evaluation,
+            confidence: consensus.confidence,
+            summary: `${evaluation.summary} [Consensus Verified]`
+          };
+        } catch {
+          // If secondary probe fails, fall back to primary evaluation
         }
       }
 
       const checkLog = this.watchRepo.insertCheckLog({
         watch_id: watch.id,
-        http_status: evaluation.httpStatus,
-        is_open: evaluation.isOpen,
-        confidence: evaluation.confidence,
-        summary: evaluation.summary,
-        extracted_snippet: evaluation.extractedSnippet,
-        page_changed: evaluation.pageChanged,
-        oracle_name: evaluation.oracleRecord?.oracle_name || adapter.oracleName,
-        cache_hit: evaluation.cacheHit,
-        entity_validated: evaluation.entityValidated,
+        http_status: finalEvaluation.httpStatus,
+        is_open: finalEvaluation.isOpen,
+        confidence: finalEvaluation.confidence,
+        summary: finalEvaluation.summary,
+        extracted_snippet: finalEvaluation.extractedSnippet,
+        page_changed: finalEvaluation.pageChanged,
+        oracle_name: finalEvaluation.oracleRecord?.oracle_name || adapter.oracleName,
+        cache_hit: finalEvaluation.cacheHit,
+        entity_validated: finalEvaluation.entityValidated,
         next_poll_after: nextPollAfter
-      });
+      }, watch.tenant_id);
 
       const updatedWatch =
         this.watchRepo.updateStatusAfterCheck({
           id: watch.id,
-          isOpen: evaluation.isOpen,
-          proposedOutcome: evaluation.outcome,
-          snapshotHash: evaluation.snapshotHash,
-          summary: evaluation.summary,
-          detectedDeadline: evaluation.detectedDeadline,
-          detectedApplyUrl: evaluation.detectedApplyUrl,
+          isOpen: finalEvaluation.isOpen,
+          proposedOutcome: finalEvaluation.outcome,
+          snapshotHash: finalEvaluation.snapshotHash,
+          summary: finalEvaluation.summary,
+          detectedDeadline: finalEvaluation.detectedDeadline,
+          detectedApplyUrl: finalEvaluation.detectedApplyUrl,
           nextPollAfter
         }) || watch;
 
       let notificationsDispatched: NotificationRecord[] = [];
-      const newlyTriggered = evaluation.isOpen && !wasAlreadyOpen;
+      const newlyTriggered = finalEvaluation.isOpen && !wasAlreadyOpen;
 
       if (newlyTriggered) {
         notificationsDispatched = await this.notifications.dispatchOpenNotifications(
           updatedWatch,
-          evaluation
+          finalEvaluation
         );
       }
 
@@ -115,7 +166,8 @@ export class ResolutionEngine {
             recipient: 'Dashboard Inbox',
             subject: `⏳ CLOSING SOON: ${updatedWatch.title} deadline is ${updatedWatch.detected_deadline}`,
             message: `Reminder: Your tracked opportunity "${updatedWatch.title}" closes on ${updatedWatch.detected_deadline} (${Math.ceil(daysUntilDeadline)} days remaining).`,
-            previewUrl: updatedWatch.detected_apply_url || updatedWatch.target_url
+            previewUrl: updatedWatch.detected_apply_url || updatedWatch.target_url,
+            tenantId: updatedWatch.tenant_id
           });
         }
       }
@@ -133,7 +185,7 @@ export class ResolutionEngine {
 
       if (isEntityMismatch) {
         const disabledWatch =
-          this.watchRepo.disableAutoResolveOnEntityMismatch(watch.id, errMsg) || watch;
+          this.watchRepo.disableAutoResolveOnEntityMismatch(watch.id, errMsg, watch.tenant_id) || watch;
 
         const checkLog = this.watchRepo.insertCheckLog({
           watch_id: watch.id,
@@ -147,7 +199,7 @@ export class ResolutionEngine {
           cache_hit: false,
           entity_validated: false,
           next_poll_after: currentUnix + config.resolution.entityMismatchBackoffSeconds
-        });
+        }, watch.tenant_id);
 
         const alertNotif = this.notifications.insertInAppAlert({
           watchId: watch.id,
@@ -155,7 +207,8 @@ export class ResolutionEngine {
           recipient: 'Config Integrity Guard',
           subject: `⚠️ Auto-Resolution Paused (Entity Mismatch): ${watch.title}`,
           message: errMsg,
-          previewUrl: watch.target_url
+          previewUrl: watch.target_url,
+          tenantId: watch.tenant_id
         });
 
         return {
@@ -186,7 +239,7 @@ export class ResolutionEngine {
       // Transient error: NEVER disable auto_resolve, NEVER spam notifications, back off by 15 minutes
       const backoffPollAfter = currentUnix + config.resolution.transientBackoffSeconds;
       const backoffSummary = `Transient oracle/network error (${errMsg}). Auto-resolve remains active; backed off poll_after by 15m.`;
-      this.watchRepo.updatePollAfter(watch.id, backoffPollAfter, backoffSummary);
+      this.watchRepo.updatePollAfter(watch.id, backoffPollAfter, backoffSummary, watch.tenant_id);
 
       const checkLog = this.watchRepo.insertCheckLog({
         watch_id: watch.id,
@@ -200,7 +253,7 @@ export class ResolutionEngine {
         cache_hit: false,
         entity_validated: true,
         next_poll_after: backoffPollAfter
-      });
+      }, watch.tenant_id);
 
       const updatedWatch = this.watchRepo.getById(watch.id) || watch;
 
@@ -271,17 +324,52 @@ export class ResolutionEngine {
     let notificationsDispatched = 0;
 
     for (const [, watchesInGroup] of canonicalGroups) {
-      for (const w of watchesInGroup) {
-        const outcome = await this.runWatchCheck(w.id);
-        if (outcome) {
-          outcomes.push(outcome);
-          if (outcome.evaluation.cacheHit) {
-            cacheHits++;
-          } else {
-            liveOracleScrapes++;
-          }
-          notificationsDispatched += outcome.notificationsDispatched.length;
+      if (watchesInGroup.length === 0) continue;
+      // 1. Probe the target ONCE for this canonical target group
+      const primary = watchesInGroup[0];
+      const outcome = await this.runWatchCheck(primary.id);
+      if (!outcome) continue;
+
+      outcomes.push(outcome);
+      if (outcome.evaluation.cacheHit) {
+        cacheHits++;
+      } else {
+        liveOracleScrapes++;
+      }
+      notificationsDispatched += outcome.notificationsDispatched.length;
+
+      // 2. Multiplexed Fan-Out: replicate state transition and notifications to all other subscribers in group
+      for (let i = 1; i < watchesInGroup.length; i++) {
+        cacheHits++;
+        const sub = watchesInGroup[i];
+        const updated = this.watchRepo.updateStatusAfterCheck({
+          id: sub.id,
+          isOpen: outcome.evaluation.isOpen,
+          proposedOutcome: outcome.evaluation.outcome,
+          snapshotHash: outcome.evaluation.snapshotHash,
+          summary: outcome.evaluation.summary,
+          detectedDeadline: outcome.evaluation.detectedDeadline,
+          detectedApplyUrl: outcome.evaluation.detectedApplyUrl,
+          nextPollAfter: outcome.watch.poll_after,
+          tenant_id: sub.tenant_id
+        });
+
+        let subNotifs: NotificationRecord[] = [];
+        if (outcome.newlyTriggered && updated) {
+          subNotifs = await this.notifications.dispatchOpenNotifications(updated, outcome.evaluation);
+          notificationsDispatched += subNotifs.length;
         }
+
+        outcomes.push({
+          watch: updated || sub,
+          evaluation: {
+            ...outcome.evaluation,
+            cacheHit: true
+          },
+          checkLog: outcome.checkLog,
+          notificationsDispatched: subNotifs,
+          newlyTriggered: outcome.newlyTriggered
+        });
       }
     }
 

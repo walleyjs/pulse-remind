@@ -114,7 +114,7 @@ export interface StructuredPortalSignals {
   hasStructuredSignal: boolean;
   isOpen: boolean | null;
   confidence: number;
-  source: 'json_ld' | 'next_data' | null;
+  source: 'json_ld' | 'next_data' | 'opengraph' | 'microdata' | null;
   detectedDeadline: string | null;
   detectedApplyUrl: string | null;
   detectedOpenDate: string | null;
@@ -167,6 +167,7 @@ export function extractStructuredPortalState(
 
       for (const node of nodes) {
         const availability = String(node.availability || '');
+        const eventStatus = String(node.eventStatus || '');
         const deadline =
           (node.applicationDeadline as string) ||
           (node.validThrough as string) ||
@@ -194,6 +195,32 @@ export function extractStructuredPortalState(
           }
         }
 
+        if (/EventCancelled|EventPostponed/i.test(eventStatus)) {
+          return {
+            hasStructuredSignal: true,
+            isOpen: false,
+            confidence: 0.98,
+            source: 'json_ld',
+            detectedDeadline: deadline,
+            detectedApplyUrl: null,
+            detectedOpenDate: startDate,
+            summaryReason: `Schema.org JSON-LD eventStatus=${eventStatus}`
+          };
+        }
+
+        if (/SoldOut|OutOfStock|Discontinued|PreSale/i.test(availability)) {
+          return {
+            hasStructuredSignal: true,
+            isOpen: false,
+            confidence: 0.96,
+            source: 'json_ld',
+            detectedDeadline: deadline,
+            detectedApplyUrl: null,
+            detectedOpenDate: startDate,
+            summaryReason: `Schema.org JSON-LD availability=${availability}`
+          };
+        }
+
         if (/InStock|PreOrder|OnlineOnly|LimitedAvailability/i.test(availability)) {
           return {
             hasStructuredSignal: true,
@@ -206,16 +233,17 @@ export function extractStructuredPortalState(
             summaryReason: `Schema.org JSON-LD availability=${availability}`
           };
         }
-        if (/SoldOut|OutOfStock|Discontinued|PreSale/i.test(availability)) {
+
+        if (/EventScheduled|EventMovedOnline/i.test(eventStatus)) {
           return {
             hasStructuredSignal: true,
-            isOpen: false,
+            isOpen: true,
             confidence: 0.96,
             source: 'json_ld',
             detectedDeadline: deadline,
-            detectedApplyUrl: null,
+            detectedApplyUrl: resolvedUrl,
             detectedOpenDate: startDate,
-            summaryReason: `Schema.org JSON-LD availability=${availability}`
+            summaryReason: `Schema.org JSON-LD eventStatus=${eventStatus}`
           };
         }
       }
@@ -276,6 +304,134 @@ export function extractStructuredPortalState(
       }
     } catch {
       // Ignore malformed __NEXT_DATA__
+    }
+  }
+
+  // 2b. Parse Nuxt.js SSR Hydration state (<script id="__NUXT_DATA__" type="application/json">)
+  const nuxtDataMatch = rawHtml.match(
+    /<script\b[^>]*id=["']__NUXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i
+  );
+  if (nuxtDataMatch) {
+    try {
+      const parsed = JSON.parse(nuxtDataMatch[1].trim());
+      const nodes: Record<string, unknown>[] = [];
+      findObjectValues(parsed, nodes);
+      for (const node of nodes) {
+        if (typeof node.isOpen === 'boolean' || typeof node.registrationOpen === 'boolean') {
+          const isOpen = typeof node.isOpen === 'boolean' ? node.isOpen : Boolean(node.registrationOpen);
+          return {
+            hasStructuredSignal: true,
+            isOpen,
+            confidence: 0.97,
+            source: 'next_data',
+            detectedDeadline: (node.deadline as string) || null,
+            detectedApplyUrl: (node.applyUrl as string) || null,
+            detectedOpenDate: null,
+            summaryReason: `SSR __NUXT_DATA__ state (isOpen=${isOpen})`
+          };
+        }
+      }
+    } catch {
+      // Ignore malformed __NUXT_DATA__
+    }
+  }
+
+  // 3. Parse OpenGraph / Meta availability tags
+  const ogAvailabilityMatch =
+    rawHtml.match(
+      /<meta\s+[^>]*(?:property|name)=["'](?:og:availability|product:availability|availability)["'][^>]*content=["']([^"']+)["']/i
+    ) ||
+    rawHtml.match(
+      /<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:availability|product:availability|availability)["']/i
+    );
+  if (ogAvailabilityMatch) {
+    const val = ogAvailabilityMatch[1].trim();
+    if (/instock|in_stock|available/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: true,
+        confidence: 0.95,
+        source: 'opengraph',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `OpenGraph meta availability=${val}`
+      };
+    }
+    if (/oos|out of stock|outofstock|sold_out|soldout|discontinued/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: false,
+        confidence: 0.95,
+        source: 'opengraph',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `OpenGraph meta availability=${val}`
+      };
+    }
+  }
+
+  // 4. Parse Schema.org Microdata (itemprop="availability" or itemprop="eventStatus")
+  const eventStatusMicrodata = rawHtml.match(
+    /<[^>]+itemprop=["']eventStatus["'][^>]*(?:href|content)=["']https?:\/\/schema\.org\/([^"']+)["']/i
+  );
+  if (eventStatusMicrodata) {
+    const val = eventStatusMicrodata[1].trim();
+    if (/EventScheduled|EventMovedOnline/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: true,
+        confidence: 0.96,
+        source: 'microdata',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `Microdata itemprop eventStatus=${val}`
+      };
+    }
+    if (/EventCancelled|EventPostponed/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: false,
+        confidence: 0.96,
+        source: 'microdata',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `Microdata itemprop eventStatus=${val}`
+      };
+    }
+  }
+
+  const microdataMatch = rawHtml.match(
+    /<[^>]+itemprop=["']availability["'][^>]*(?:href|content)=["']https?:\/\/schema\.org\/([^"']+)["']/i
+  );
+  if (microdataMatch) {
+    const val = microdataMatch[1].trim();
+    if (/InStock|PreOrder|LimitedAvailability/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: true,
+        confidence: 0.96,
+        source: 'microdata',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `Microdata itemprop availability=${val}`
+      };
+    }
+    if (/OutOfStock|SoldOut|Discontinued/i.test(val)) {
+      return {
+        hasStructuredSignal: true,
+        isOpen: false,
+        confidence: 0.96,
+        source: 'microdata',
+        detectedDeadline: null,
+        detectedApplyUrl: null,
+        detectedOpenDate: null,
+        summaryReason: `Microdata itemprop availability=${val}`
+      };
     }
   }
 
@@ -343,13 +499,21 @@ export function extractSemanticMainHtml(html: string): string {
     .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
 
-  for (const tag of ['nav', 'footer', 'aside']) {
+  for (const tag of ['nav', 'footer', 'aside', 'dialog', 'template']) {
     cleaned = stripBalancedTagBlocks(cleaned, tag);
   }
 
   cleaned = cleaned
     .replace(
       /<[^>]+(?:style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["']|\bhidden\b|\binert\b|aria-hidden=["']true["'])[^>]*>[\s\S]*?<\/[a-z0-9]+>/gi,
+      ' '
+    )
+    .replace(
+      /<[^>]+(?:role=["'](?:dialog|alertdialog)["'])[^>]*>[\s\S]*?<\/[a-z0-9]+>/gi,
+      ' '
+    )
+    .replace(
+      /<(?:div|section)\b[^>]*class=["'][^"']*(?:modal|overlay|popup|toast|cookie-banner)[^"']*["'][^>]*>[\s\S]*?<\/(?:div|section)>/gi,
       ' '
     )
     .replace(
@@ -448,7 +612,7 @@ export function extractApplyUrl(html: string, baseUrl: string): string | null {
 
 export function extractDeadlineFromText(text: string): string | null {
   const patterns = [
-    /(?:deadline|apply before|register before|closes on|due by|submission deadline|ends on)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4}(?:\s+(?:at\s+)?\d{1,2}:\d{2}\s*AoE)?)/i,
+    /(?:deadline|apply before|register before|closes on|due by|submission deadline|ends on|open until|until)\s*[:\-–]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4}(?:\s+(?:at\s+)?\d{1,2}:\d{2}\s*AoE)?)/i,
     /(?:deadline|apply before|register before|closes on|due by)\s*[:\-–]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})/i,
     /(?:before|by)\s+([A-Z][a-z]+\s+\d{1,2},?\s+202[6-9])/i
   ];
@@ -613,6 +777,15 @@ export function evaluateWebpageSignals(
     isOpen = true;
     outcome = 1;
     confidence = 0.88;
+  } else if (
+    candidateApplyUrl &&
+    matchedClosed.length === 0 &&
+    !NEGATION_OR_FUTURE_MODALS.test(visibleCleanText) &&
+    (detectedDeadline || /apply|register|regist|tickets|submit|enroll|booking|sign up/i.test(visibleCleanText))
+  ) {
+    isOpen = true;
+    outcome = 1;
+    confidence = 0.90;
   } else {
     isOpen = false;
     outcome = null;

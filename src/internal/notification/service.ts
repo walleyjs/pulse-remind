@@ -5,6 +5,7 @@ import type { ChannelConfigRecord, NotificationChannelType, NotificationRecord }
 import { notificationRepository, NotificationRepository } from './repository.ts';
 import { emailProvider, EmailProvider } from './providers/email.provider.ts';
 import { messagingWebhookProvider, MessagingWebhookProvider } from './providers/webhook.provider.ts';
+import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
 
 export class NotificationService {
   private readonly repo: NotificationRepository;
@@ -21,32 +22,45 @@ export class NotificationService {
     this.webhook = webhook;
   }
 
-  listNotifications(limit = 50): NotificationRecord[] {
-    return this.repo.list(limit);
+  listNotifications(limit = 50, tenantId?: string): NotificationRecord[] {
+    return this.repo.list(limit, tenantId);
   }
 
-  markAllRead(): void {
-    this.repo.markAllRead();
+  getNotificationById(id: string, tenantId?: string): NotificationRecord | null {
+    return this.repo.getById(id, tenantId);
   }
 
-  getChannelConfigs(): ChannelConfigRecord[] {
-    return this.repo.getChannelConfigs();
+  updateDeliveryStatus(
+    id: string,
+    status: 'pending' | 'delivered' | 'opened' | 'simulated' | 'failed',
+    tenantId?: string
+  ): boolean {
+    return this.repo.updateDeliveryStatus(id, status, tenantId);
+  }
+
+  markAllRead(tenantId?: string): void {
+    this.repo.markAllRead(tenantId);
+  }
+
+  getChannelConfigs(tenantId = DEFAULT_TENANT_ID): ChannelConfigRecord[] {
+    return this.repo.getChannelConfigs(tenantId);
   }
 
   updateChannelConfig(
     channel: NotificationChannelType,
     enabled: boolean,
-    config: Record<string, string>
+    config: Record<string, string>,
+    tenantId = DEFAULT_TENANT_ID
   ): ChannelConfigRecord {
-    return this.repo.updateChannelConfig(channel, enabled, config);
+    return this.repo.updateChannelConfig(channel, enabled, config, tenantId);
   }
 
-  getSavedDefaultEmail(): string | null {
-    return this.repo.getSavedDefaultEmail();
+  getSavedDefaultEmail(tenantId = DEFAULT_TENANT_ID): string | null {
+    return this.repo.getSavedDefaultEmail(tenantId);
   }
 
-  setSavedDefaultEmail(email: string): ChannelConfigRecord {
-    return this.repo.setSavedDefaultEmail(email);
+  setSavedDefaultEmail(email: string, tenantId = DEFAULT_TENANT_ID): ChannelConfigRecord {
+    return this.repo.setSavedDefaultEmail(email, tenantId);
   }
 
   getRenderedEmailHtml(notificationId: string): string | null {
@@ -56,30 +70,40 @@ export class NotificationService {
   insertInAppAlert(params: {
     watchId: string;
     watchTitle: string;
-    recipient: string;
-    subject: string;
-    message: string;
-    previewUrl: string | null;
+    recipient?: string;
+    subject?: string;
+    message?: string;
+    summary?: string;
+    details?: string;
+    previewUrl?: string | null;
     idempotencyKey?: string;
+    tenantId?: string;
   }): NotificationRecord {
-    return this.repo.insert({
-      watch_id: params.watchId,
-      watch_title: params.watchTitle,
-      channel: 'in_app',
-      recipient: params.recipient,
-      subject: params.subject,
-      message: params.message,
-      delivery_status: 'delivered',
-      preview_url: params.previewUrl,
-      idempotency_key: params.idempotencyKey
-    }).record;
+    const tenantId = params.tenantId || DEFAULT_TENANT_ID;
+    const subject = params.subject || params.summary || 'PulseRemind In-App Notification';
+    const message = params.message || params.details || params.summary || '';
+    const recipient = params.recipient || 'in_app_feed';
+    return this.repo.insert(
+      {
+        watch_id: params.watchId,
+        watch_title: params.watchTitle,
+        channel: 'in_app',
+        recipient,
+        subject,
+        message,
+        delivery_status: 'delivered',
+        preview_url: params.previewUrl ?? null,
+        idempotency_key: params.idempotencyKey
+      },
+      tenantId
+    ).record;
   }
 
   private buildIdempotencyKey(watch: WatchRecord, channel: NotificationChannelType): string {
     const cycleKey = watch.window_start_date || watch.window_label || 'default_cycle';
     return crypto
       .createHash('sha256')
-      .update(`${watch.id}::${channel}::open::${cycleKey}`)
+      .update(`${watch.tenant_id}::${watch.id}::${channel}::open::${cycleKey}`)
       .digest('hex')
       .slice(0, 24);
   }
@@ -89,8 +113,9 @@ export class NotificationService {
     evaluation: EvaluationResult,
     options: { allowDuplicateTest?: boolean; nowUnix?: number } = {}
   ): Promise<NotificationRecord[]> {
+    const tenantId = watch.tenant_id || DEFAULT_TENANT_ID;
     const nowUnix = options.nowUnix ?? Math.floor(Date.now() / 1000);
-    const configs = this.repo.getChannelConfigs();
+    const configs = this.repo.getChannelConfigs(tenantId);
     const configMap = new Map(configs.map((c) => [c.channel, c]));
     const sentNotifications: NotificationRecord[] = [];
 
@@ -117,7 +142,7 @@ export class NotificationService {
 
       // Check existing outbox state before making external network calls
       if (idempotencyKey) {
-        const existing = this.repo.findByIdempotencyKey(idempotencyKey);
+        const existing = this.repo.findByIdempotencyKey(idempotencyKey, tenantId);
         if (existing) {
           if (existing.delivery_status !== 'failed') {
             // Already delivered or simulated for this watch + channel + cycle
@@ -131,17 +156,20 @@ export class NotificationService {
       }
 
       if (channel === 'in_app') {
-        const { record, created } = this.repo.insert({
-          watch_id: watch.id,
-          watch_title: watch.title,
-          channel: 'in_app',
-          recipient: 'Dashboard Inbox',
-          subject,
-          message: plainMessage,
-          delivery_status: 'delivered',
-          preview_url: evaluation.detectedApplyUrl || watch.target_url,
-          idempotency_key: idempotencyKey
-        });
+        const { record, created } = this.repo.insert(
+          {
+            watch_id: watch.id,
+            watch_title: watch.title,
+            channel: 'in_app',
+            recipient: 'Dashboard Inbox',
+            subject,
+            message: plainMessage,
+            delivery_status: 'delivered',
+            preview_url: evaluation.detectedApplyUrl || watch.target_url,
+            idempotency_key: idempotencyKey
+          },
+          tenantId
+        );
         if (created) sentNotifications.push(record);
         continue;
       }
@@ -149,8 +177,8 @@ export class NotificationService {
       if (channel === 'email') {
         const recipient =
           watch.recipient_email ||
-          process.env.DEFAULT_RECIPIENT_EMAIL ||
           channelCfg?.config?.default_recipient ||
+          this.repo.getSavedDefaultEmail(tenantId) ||
           'student@university.edu';
         const html = this.email.buildOpportunityOpenHtml(watch, evaluation);
         const icsAttachment = this.email.buildWatchIcsAttachment(watch);
@@ -169,19 +197,22 @@ export class NotificationService {
             ? nowUnix + (sendResult.retryAfterSeconds ?? 60)
             : null;
 
-        const { record: notif, created } = this.repo.insert({
-          watch_id: watch.id,
-          watch_title: watch.title,
-          channel: 'email',
-          recipient,
-          subject,
-          message: plainMessage,
-          delivery_status: sendResult.deliveryStatus === 'failed' ? 'failed' : 'delivered',
-          preview_url: null,
-          idempotency_key: idempotencyKey,
-          next_retry_at: nextRetryAt,
-          last_error: sendResult.error || null
-        });
+        const { record: notif, created } = this.repo.insert(
+          {
+            watch_id: watch.id,
+            watch_title: watch.title,
+            channel: 'email',
+            recipient,
+            subject,
+            message: plainMessage,
+            delivery_status: sendResult.deliveryStatus === 'failed' ? 'failed' : 'delivered',
+            preview_url: null,
+            idempotency_key: idempotencyKey,
+            next_retry_at: nextRetryAt,
+            last_error: sendResult.error || null
+          },
+          tenantId
+        );
 
         if (created) {
           this.email.storeRenderedHtml(notif.id, html);
@@ -201,19 +232,22 @@ export class NotificationService {
       const nextRetryAt =
         deliveryStatus === 'failed' ? nowUnix + (retryAfterSeconds ?? 60) : null;
 
-      const { record, created } = this.repo.insert({
-        watch_id: watch.id,
-        watch_title: watch.title,
-        channel,
-        recipient: recipientLabel,
-        subject,
-        message: plainMessage,
-        delivery_status: deliveryStatus,
-        preview_url: evaluation.detectedApplyUrl || watch.target_url,
-        idempotency_key: idempotencyKey,
-        next_retry_at: nextRetryAt,
-        last_error: error || null
-      });
+      const { record, created } = this.repo.insert(
+        {
+          watch_id: watch.id,
+          watch_title: watch.title,
+          channel,
+          recipient: recipientLabel,
+          subject,
+          message: plainMessage,
+          delivery_status: deliveryStatus,
+          preview_url: evaluation.detectedApplyUrl || watch.target_url,
+          idempotency_key: idempotencyKey,
+          next_retry_at: nextRetryAt,
+          last_error: error || null
+        },
+        tenantId
+      );
       if (created) sentNotifications.push(record);
     }
 

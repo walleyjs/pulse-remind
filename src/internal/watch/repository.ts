@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
-import { db } from '../../pkg/db/sqlite.ts';
+import { db, runInTransaction } from '../../pkg/db/sqlite.ts';
 import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
+import { enqueueOutbox } from '../../pkg/db/outbox.ts';
+import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
+import { normalizeCanonicalUrl } from '../resolution/validator.ts';
+import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
 import { notificationRepository } from '../notification/repository.ts';
 import type {
   CheckLogRecord,
@@ -44,18 +48,22 @@ function mapWatchRow(row: Record<string, unknown>): WatchRecord {
 
   return {
     id: String(row.id),
+    tenant_id: String(row.tenant_id || DEFAULT_TENANT_ID),
+    version: Number(row.version || 1),
     title: String(row.title),
     category: String(row.category),
     chat_context: String(row.chat_context),
     source_chat_client: String(row.source_chat_client),
     target_url: targetUrl,
     secondary_url: secondaryUrl,
+    canonical_url_key: row.canonical_url_key ? String(row.canonical_url_key) : null,
     trigger_type: (row.trigger_type as TriggerType) || 'web_monitor',
     condition_text: String(row.condition_text),
     expected_keywords: JSON.parse(String(row.expected_keywords || '[]')),
     closed_keywords: JSON.parse(String(row.closed_keywords || '[]')),
     window_start_date: row.window_start_date ? String(row.window_start_date) : null,
     window_label: row.window_label ? String(row.window_label) : null,
+    rrule: row.rrule ? String(row.rrule) : null,
     check_interval_minutes: Number(row.check_interval_minutes || 60),
     poll_after: Number(row.poll_after || 0),
     is_auto_resolve: Boolean(row.is_auto_resolve ?? 1),
@@ -84,9 +92,9 @@ export function determineInitialStatusAndPollAfter(
   targetUrl?: string | null
 ): { status: WatchStatus; pollAfter: number } {
   const nowUnix = Math.floor(Date.now() / 1000);
-  if (!windowStartDate) return { status: 'active_monitoring', pollAfter: nowUnix };
+  if (!windowStartDate) return { status: 'active_sampling', pollAfter: nowUnix };
   const start = new Date(windowStartDate);
-  if (isNaN(start.getTime())) return { status: 'active_monitoring', pollAfter: nowUnix };
+  if (isNaN(start.getTime())) return { status: 'active_sampling', pollAfter: nowUnix };
 
   const startUnix = Math.floor(start.getTime() / 1000);
   const diffDays = (startUnix - nowUnix) / 86400;
@@ -97,18 +105,28 @@ export function determineInitialStatusAndPollAfter(
       pollAfter: Math.max(nowUnix, startUnix - 7 * 86400)
     };
   }
-  return { status: 'active_monitoring', pollAfter: nowUnix };
+  const sched = calculateHazardRateSchedule(startUnix, nowUnix);
+  return { status: sched.status, pollAfter: sched.pollAfterUnix };
 }
 
 export class WatchRepository {
-  count(): number {
+  count(tenantId?: string): number {
+    if (tenantId && tenantId !== 'all') {
+      const row = db.prepare('SELECT COUNT(*) as count FROM watches WHERE tenant_id = ?').get(tenantId) as {
+        count: number;
+      };
+      return row.count;
+    }
     const row = db.prepare('SELECT COUNT(*) as count FROM watches').get() as { count: number };
     return row.count;
   }
 
-  create(input: CreateWatchInput): WatchRecord {
+  create(input: CreateWatchInput, tenantId = DEFAULT_TENANT_ID): WatchRecord {
+    const effectiveTenantId = input.tenant_id || tenantId;
     const id = 'watch_' + crypto.randomUUID().slice(0, 8);
     const now = new Date().toISOString();
+    const version = 1;
+
     const expectedKeywords =
       input.expected_keywords && input.expected_keywords.length > 0
         ? input.expected_keywords
@@ -126,7 +144,11 @@ export class WatchRepository {
             'on sale now',
             'get tickets',
             'buy tickets',
-            'enrollment is open'
+            'enrollment is open',
+            'online application',
+            'application portal',
+            'submit application',
+            'online submission'
           ];
     const closedKeywords =
       input.closed_keywords && input.closed_keywords.length > 0
@@ -169,53 +191,91 @@ export class WatchRepository {
       input.recipient_email && input.recipient_email.trim() && input.recipient_email.trim() !== 'student@university.edu'
         ? input.recipient_email.trim()
         : null;
-    const resolvedEmail = explicitEmail || notificationRepository.getSavedDefaultEmail() || null;
+    const resolvedEmail = explicitEmail || notificationRepository.getSavedDefaultEmail(effectiveTenantId) || null;
 
-    db.prepare(`
-      INSERT INTO watches (
-        id, title, category, chat_context, source_chat_client, target_url, secondary_url,
-        trigger_type, condition_text, expected_keywords, closed_keywords,
-        window_start_date, window_label, check_interval_minutes, poll_after,
-        is_auto_resolve, resolution_config, status,
-        notify_channels, recipient_email, last_status_summary, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      input.title,
-      input.category || 'event_or_opportunity',
-      input.chat_context,
-      input.source_chat_client || 'MCP Client',
-      input.target_url || null,
-      input.secondary_url || null,
-      triggerType,
-      input.condition_text || `Notify when ${input.title} opens`,
-      JSON.stringify(expectedKeywords),
-      JSON.stringify(closedKeywords),
-      input.window_start_date || null,
-      input.window_label || null,
-      input.check_interval_minutes || 60,
-      pollAfter,
-      JSON.stringify(resConfig),
-      status,
-      JSON.stringify(input.notify_channels || ['in_app', 'email']),
-      resolvedEmail,
-      initialSummary,
-      now
-    );
+    const canonicalUrlKey = input.canonical_url_key || normalizeCanonicalUrl(input.target_url);
 
-    const created = this.getById(id)!;
-    cloudDatabaseSync.replicateRow('watches', created as unknown as Record<string, unknown>).catch(() => {});
-    return created;
+    return runInTransaction(() => {
+      db.prepare(`
+        INSERT INTO watches (
+          id, tenant_id, version, title, category, chat_context, source_chat_client, target_url, secondary_url,
+          canonical_url_key, rrule, trigger_type, condition_text, expected_keywords, closed_keywords,
+          window_start_date, window_label, check_interval_minutes, poll_after,
+          is_auto_resolve, resolution_config, status,
+          notify_channels, recipient_email, last_status_summary, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        effectiveTenantId,
+        version,
+        input.title,
+        input.category || 'event_or_opportunity',
+        input.chat_context,
+        input.source_chat_client || 'MCP Client',
+        input.target_url || null,
+        input.secondary_url || null,
+        canonicalUrlKey,
+        input.rrule || null,
+        triggerType,
+        input.condition_text || `Notify when ${input.title} opens`,
+        JSON.stringify(expectedKeywords),
+        JSON.stringify(closedKeywords),
+        input.window_start_date || null,
+        input.window_label || null,
+        input.check_interval_minutes || 60,
+        pollAfter,
+        JSON.stringify(resConfig),
+        status,
+        JSON.stringify(input.notify_channels || ['in_app', 'email']),
+        resolvedEmail,
+        initialSummary,
+        now
+      );
+
+      const created = this.getById(id, effectiveTenantId)!;
+
+      enqueueOutbox({
+        tenant_id: effectiveTenantId,
+        event_type: 'watch_created',
+        entity_table: 'watches',
+        entity_id: id,
+        payload: created as unknown as Record<string, unknown>,
+        version
+      });
+
+      return created;
+    });
   }
 
-  list(statusFilter?: string): WatchRecord[] {
-    if (statusFilter && statusFilter !== 'all') {
-      const rows = db
-        .prepare('SELECT * FROM watches WHERE status = ? ORDER BY created_at DESC')
-        .all(statusFilter) as Record<string, unknown>[];
-      return rows.map(mapWatchRow);
+  findByCanonicalUrlKey(canonicalUrlKey: string): WatchRecord[] {
+    const rows = db.prepare('SELECT * FROM watches WHERE canonical_url_key = ?').all(canonicalUrlKey) as Record<
+      string,
+      unknown
+    >[];
+    return rows.map(mapWatchRow);
+  }
+
+  list(statusFilter?: string, tenantId?: string): WatchRecord[] {
+    let sql = 'SELECT * FROM watches';
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (tenantId && tenantId !== 'all') {
+      conditions.push('tenant_id = ?');
+      params.push(tenantId);
     }
-    const rows = db.prepare('SELECT * FROM watches ORDER BY created_at DESC').all() as Record<string, unknown>[];
+
+    if (statusFilter && statusFilter !== 'all') {
+      conditions.push('status = ?');
+      params.push(statusFilter);
+    }
+
+    if (conditions.length > 0) {
+      sql += ' WHERE ' + conditions.join(' AND ');
+    }
+    sql += ' ORDER BY created_at DESC';
+
+    const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(mapWatchRow);
   }
 
@@ -232,13 +292,19 @@ export class WatchRepository {
     return rows.map(mapWatchRow);
   }
 
-  getById(id: string): WatchRecord | null {
+  getById(id: string, tenantId?: string): WatchRecord | null {
+    if (tenantId && tenantId !== 'all') {
+      const row = db.prepare('SELECT * FROM watches WHERE id = ? AND tenant_id = ?').get(id, tenantId) as
+        | Record<string, unknown>
+        | undefined;
+      return row ? mapWatchRow(row) : null;
+    }
     const row = db.prepare('SELECT * FROM watches WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return row ? mapWatchRow(row) : null;
   }
 
-  findBySubscriberToken(token: string): WatchRecord | null {
-    const all = this.list();
+  findBySubscriberToken(token: string, tenantId?: string): WatchRecord | null {
+    const all = this.list('all', tenantId);
     return (
       all.find(
         (w) => w.resolution_config?.provider_metadata?.subscriber_token === token
@@ -252,13 +318,15 @@ export class WatchRepository {
       recipient_email?: string;
       notify_channels?: NotificationChannelType[];
       ntfy_topic?: string;
-    }
+    },
+    tenantId?: string
   ): WatchRecord | null {
-    const watch = this.findBySubscriberToken(token);
+    const watch = this.findBySubscriberToken(token, tenantId);
     if (!watch) return null;
 
+    const effectiveTenantId = watch.tenant_id;
     if (params.recipient_email && params.recipient_email.trim()) {
-      notificationRepository.setSavedDefaultEmail(params.recipient_email.trim());
+      notificationRepository.setSavedDefaultEmail(params.recipient_email.trim(), effectiveTenantId);
     }
 
     const nextChannels =
@@ -274,20 +342,31 @@ export class WatchRepository {
         claimed_at: new Date().toISOString()
       }
     };
+    const nextVersion = watch.version + 1;
 
-    db.prepare(`
-      UPDATE watches
-      SET recipient_email = ?,
-          notify_channels = ?,
-          resolution_config = ?
-      WHERE id = ?
-    `).run(nextEmail, JSON.stringify(nextChannels), JSON.stringify(nextResConfig), watch.id);
+    return runInTransaction(() => {
+      db.prepare(`
+        UPDATE watches
+        SET recipient_email = ?,
+            notify_channels = ?,
+            resolution_config = ?,
+            version = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(nextEmail, JSON.stringify(nextChannels), JSON.stringify(nextResConfig), nextVersion, watch.id, effectiveTenantId);
 
-    const updated = this.getById(watch.id);
-    if (updated) {
-      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
-    }
-    return updated;
+      const updated = this.getById(watch.id, effectiveTenantId);
+      if (updated) {
+        enqueueOutbox({
+          tenant_id: effectiveTenantId,
+          event_type: 'watch_claimed',
+          entity_table: 'watches',
+          entity_id: watch.id,
+          payload: updated as unknown as Record<string, unknown>,
+          version: nextVersion
+        });
+      }
+      return updated;
+    });
   }
 
   bindNotificationDestination(params: {
@@ -296,10 +375,13 @@ export class WatchRepository {
     notify_channels?: NotificationChannelType[];
     ntfy_topic?: string;
     save_as_default?: boolean;
+    tenant_id?: string;
   }): WatchRecord[] {
     const cleanEmail = params.recipient_email.trim();
+    const effectiveTenantId = params.tenant_id || DEFAULT_TENANT_ID;
+
     if (params.save_as_default !== false && cleanEmail) {
-      notificationRepository.setSavedDefaultEmail(cleanEmail);
+      notificationRepository.setSavedDefaultEmail(cleanEmail, effectiveTenantId);
     }
 
     const targetIds = new Set<string>();
@@ -307,8 +389,8 @@ export class WatchRepository {
       targetIds.add(params.watch_id);
     }
 
-    // Also bind any currently unbound watches (or most recent watch if watch_id omitted)
-    const allWatches = this.list();
+    // Bind any currently unbound watches for this tenant
+    const allWatches = this.list('all', effectiveTenantId);
     for (const w of allWatches) {
       if (!w.recipient_email || w.recipient_email === 'student@university.edu') {
         targetIds.add(w.id);
@@ -320,7 +402,7 @@ export class WatchRepository {
 
     const updatedWatches: WatchRecord[] = [];
     for (const id of targetIds) {
-      const watch = this.getById(id);
+      const watch = this.getById(id, effectiveTenantId);
       if (!watch) continue;
       const mergedChannels = Array.from(
         new Set<NotificationChannelType>([
@@ -337,33 +419,44 @@ export class WatchRepository {
           claimed_at: new Date().toISOString()
         }
       };
+      const nextVersion = watch.version + 1;
 
-      db.prepare(`
-        UPDATE watches
-        SET recipient_email = ?,
-            notify_channels = ?,
-            resolution_config = ?
-        WHERE id = ?
-      `).run(cleanEmail, JSON.stringify(mergedChannels), JSON.stringify(nextResConfig), id);
+      runInTransaction(() => {
+        db.prepare(`
+          UPDATE watches
+          SET recipient_email = ?,
+              notify_channels = ?,
+              resolution_config = ?,
+              version = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(cleanEmail, JSON.stringify(mergedChannels), JSON.stringify(nextResConfig), nextVersion, id, effectiveTenantId);
 
-      const updated = this.getById(id);
-      if (updated) {
-        updatedWatches.push(updated);
-        cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
-      }
+        const updated = this.getById(id, effectiveTenantId);
+        if (updated) {
+          updatedWatches.push(updated);
+          enqueueOutbox({
+            tenant_id: effectiveTenantId,
+            event_type: 'watch_updated',
+            entity_table: 'watches',
+            entity_id: id,
+            payload: updated as unknown as Record<string, unknown>,
+            version: nextVersion
+          });
+        }
+      });
     }
 
     return updatedWatches;
   }
 
-  addOracleResponse(id: string, record: OracleResponseRecord): void {
-    const watch = this.getById(id);
+  addOracleResponse(id: string, record: OracleResponseRecord, tenantId?: string): void {
+    const watch = this.getById(id, tenantId);
     if (!watch) return;
     const updated = [record, ...watch.oracle_responses].slice(0, 10);
     db.prepare('UPDATE watches SET oracle_responses = ? WHERE id = ?').run(JSON.stringify(updated), id);
   }
 
-  updatePollAfter(id: string, pollAfterUnix: number, summary?: string): void {
+  updatePollAfter(id: string, pollAfterUnix: number, summary?: string, tenantId?: string): void {
     if (summary) {
       db.prepare('UPDATE watches SET poll_after = ?, last_status_summary = ? WHERE id = ?').run(
         pollAfterUnix,
@@ -375,25 +468,40 @@ export class WatchRepository {
     }
   }
 
-  disableAutoResolveOnEntityMismatch(id: string, reason: string): WatchRecord | null {
+  disableAutoResolveOnEntityMismatch(id: string, reason: string, tenantId?: string): WatchRecord | null {
+    const current = this.getById(id, tenantId);
+    if (!current) return null;
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE watches
-      SET is_auto_resolve = 0,
-          status = 'config_error',
-          last_checked_at = ?,
-          last_status_summary = ?
-      WHERE id = ?
-    `).run(now, reason, id);
-    const updated = this.getById(id);
-    if (updated) {
-      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
-    }
-    return updated;
+    const nextVersion = current.version + 1;
+
+    return runInTransaction(() => {
+      db.prepare(`
+        UPDATE watches
+        SET is_auto_resolve = 0,
+            status = 'config_error',
+            last_checked_at = ?,
+            last_status_summary = ?,
+            version = ?
+        WHERE id = ?
+      `).run(now, reason, nextVersion, id);
+
+      const updated = this.getById(id, current.tenant_id);
+      if (updated) {
+        enqueueOutbox({
+          tenant_id: current.tenant_id,
+          event_type: 'watch_updated',
+          entity_table: 'watches',
+          entity_id: id,
+          payload: updated as unknown as Record<string, unknown>,
+          version: nextVersion
+        });
+      }
+      return updated;
+    });
   }
 
-  updateEventTiming(id: string, startTime?: string | null, endTimeDeadline?: string | null): void {
-    const watch = this.getById(id);
+  updateEventTiming(id: string, startTime?: string | null, endTimeDeadline?: string | null, tenantId?: string): void {
+    const watch = this.getById(id, tenantId);
     if (!watch) return;
     const nextResConfig = {
       ...watch.resolution_config,
@@ -412,7 +520,7 @@ export class WatchRepository {
     `).run(JSON.stringify(nextResConfig), startTime || null, endTimeDeadline || null, id);
   }
 
-  markClosingSoonNotified(id: string): void {
+  markClosingSoonNotified(id: string, tenantId?: string): void {
     db.prepare('UPDATE watches SET closing_soon_notified = 1 WHERE id = ?').run(id);
   }
 
@@ -425,9 +533,10 @@ export class WatchRepository {
     detectedDeadline?: string | null;
     detectedApplyUrl?: string | null;
     nextPollAfter?: number;
+    tenant_id?: string;
   }): WatchRecord | null {
     const now = new Date().toISOString();
-    const current = this.getById(params.id);
+    const current = this.getById(params.id, params.tenant_id);
     if (!current) return null;
 
     let nextStatus: WatchStatus = current.status;
@@ -441,37 +550,49 @@ export class WatchRepository {
 
     const triggeredAt = params.isOpen ? current.triggered_at || now : null;
     const pollAfter = params.nextPollAfter ?? current.poll_after;
+    const nextVersion = current.version + 1;
 
-    db.prepare(`
-      UPDATE watches
-      SET status = ?,
-          proposed_outcome = ?,
-          poll_after = ?,
-          last_checked_at = ?,
-          last_snapshot_hash = ?,
-          last_status_summary = ?,
-          detected_deadline = COALESCE(?, detected_deadline),
-          detected_apply_url = COALESCE(?, detected_apply_url),
-          triggered_at = ?
-      WHERE id = ?
-    `).run(
-      nextStatus,
-      params.proposedOutcome,
-      pollAfter,
-      now,
-      params.snapshotHash,
-      params.summary,
-      params.detectedDeadline || null,
-      params.detectedApplyUrl || null,
-      triggeredAt,
-      params.id
-    );
+    return runInTransaction(() => {
+      db.prepare(`
+        UPDATE watches
+        SET status = ?,
+            proposed_outcome = ?,
+            poll_after = ?,
+            last_checked_at = ?,
+            last_snapshot_hash = ?,
+            last_status_summary = ?,
+            detected_deadline = COALESCE(?, detected_deadline),
+            detected_apply_url = COALESCE(?, detected_apply_url),
+            triggered_at = ?,
+            version = ?
+        WHERE id = ?
+      `).run(
+        nextStatus,
+        params.proposedOutcome,
+        pollAfter,
+        now,
+        params.snapshotHash,
+        params.summary,
+        params.detectedDeadline || null,
+        params.detectedApplyUrl || null,
+        triggeredAt,
+        nextVersion,
+        params.id
+      );
 
-    const updated = this.getById(params.id);
-    if (updated) {
-      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
-    }
-    return updated;
+      const updated = this.getById(params.id, current.tenant_id);
+      if (updated) {
+        enqueueOutbox({
+          tenant_id: current.tenant_id,
+          event_type: params.isOpen ? 'watch_triggered' : 'watch_updated',
+          entity_table: 'watches',
+          entity_id: params.id,
+          payload: updated as unknown as Record<string, unknown>,
+          version: nextVersion
+        });
+      }
+      return updated;
+    });
   }
 
   updateFields(
@@ -488,96 +609,156 @@ export class WatchRepository {
       poll_after: number;
       notify_channels: NotificationChannelType[];
       recipient_email: string | null;
-    }>
+    }>,
+    tenantId?: string
   ): WatchRecord | null {
-    const existing = this.getById(id);
+    const existing = this.getById(id, tenantId);
     if (!existing) return null;
+    const nextVersion = existing.version + 1;
 
-    db.prepare(`
-      UPDATE watches
-      SET title = ?,
-          target_url = ?,
-          secondary_url = ?,
-          condition_text = ?,
-          window_start_date = ?,
-          window_label = ?,
-          status = ?,
-          is_auto_resolve = ?,
-          poll_after = ?,
-          notify_channels = ?,
-          recipient_email = ?
-      WHERE id = ?
-    `).run(
-      updates.title ?? existing.title,
-      updates.target_url !== undefined ? updates.target_url : existing.target_url,
-      updates.secondary_url !== undefined ? updates.secondary_url : existing.secondary_url,
-      updates.condition_text ?? existing.condition_text,
-      updates.window_start_date !== undefined ? updates.window_start_date : existing.window_start_date,
-      updates.window_label !== undefined ? updates.window_label : existing.window_label,
-      updates.status ?? existing.status,
-      (updates.is_auto_resolve ?? existing.is_auto_resolve) ? 1 : 0,
-      updates.poll_after ?? existing.poll_after,
-      JSON.stringify(updates.notify_channels ?? existing.notify_channels),
-      updates.recipient_email !== undefined ? updates.recipient_email : existing.recipient_email,
-      id
-    );
+    return runInTransaction(() => {
+      db.prepare(`
+        UPDATE watches
+        SET title = ?,
+            target_url = ?,
+            secondary_url = ?,
+            condition_text = ?,
+            window_start_date = ?,
+            window_label = ?,
+            status = ?,
+            is_auto_resolve = ?,
+            poll_after = ?,
+            notify_channels = ?,
+            recipient_email = ?,
+            version = ?
+        WHERE id = ?
+      `).run(
+        updates.title ?? existing.title,
+        updates.target_url !== undefined ? updates.target_url : existing.target_url,
+        updates.secondary_url !== undefined ? updates.secondary_url : existing.secondary_url,
+        updates.condition_text ?? existing.condition_text,
+        updates.window_start_date !== undefined ? updates.window_start_date : existing.window_start_date,
+        updates.window_label !== undefined ? updates.window_label : existing.window_label,
+        updates.status ?? existing.status,
+        (updates.is_auto_resolve ?? existing.is_auto_resolve) ? 1 : 0,
+        updates.poll_after ?? existing.poll_after,
+        JSON.stringify(updates.notify_channels ?? existing.notify_channels),
+        updates.recipient_email !== undefined ? updates.recipient_email : existing.recipient_email,
+        nextVersion,
+        id
+      );
 
-    const updated = this.getById(id);
-    if (updated) {
-      cloudDatabaseSync.replicateRow('watches', updated as unknown as Record<string, unknown>).catch(() => {});
-    }
-    return updated;
+      const updated = this.getById(id, existing.tenant_id);
+      if (updated) {
+        enqueueOutbox({
+          tenant_id: existing.tenant_id,
+          event_type: 'watch_updated',
+          entity_table: 'watches',
+          entity_id: id,
+          payload: updated as unknown as Record<string, unknown>,
+          version: nextVersion
+        });
+      }
+      return updated;
+    });
   }
 
-  delete(id: string): boolean {
-    db.prepare('DELETE FROM check_logs WHERE watch_id = ?').run(id);
-    const res = db.prepare('DELETE FROM watches WHERE id = ?').run(id);
-    cloudDatabaseSync.deleteRow('watches', id).catch(() => {});
-    return Number(res.changes) > 0;
+  delete(id: string, tenantId?: string): boolean {
+    const existing = this.getById(id, tenantId);
+    if (!existing) return false;
+
+    return runInTransaction(() => {
+      db.prepare('DELETE FROM check_logs WHERE watch_id = ?').run(id);
+      const res = db.prepare('DELETE FROM watches WHERE id = ?').run(id);
+      const deleted = Number(res.changes) > 0;
+
+      if (deleted) {
+        enqueueOutbox({
+          tenant_id: existing.tenant_id,
+          event_type: 'watch_deleted',
+          entity_table: 'watches',
+          entity_id: id,
+          payload: { id, title: existing.title },
+          version: existing.version + 1
+        });
+      }
+
+      return deleted;
+    });
   }
 
-  insertCheckLog(entry: Omit<CheckLogRecord, 'id' | 'checked_at'>): CheckLogRecord {
+  insertCheckLog(entry: Omit<CheckLogRecord, 'id' | 'checked_at' | 'tenant_id'>, tenantId = DEFAULT_TENANT_ID): CheckLogRecord {
     const id = 'chk_' + crypto.randomUUID().slice(0, 8);
     const checkedAt = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO check_logs (
-        id, watch_id, checked_at, http_status, is_open, confidence, summary, extracted_snippet,
-        page_changed, oracle_name, cache_hit, entity_validated, next_poll_after
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      entry.watch_id,
-      checkedAt,
-      entry.http_status,
-      entry.is_open ? 1 : 0,
-      entry.confidence,
-      entry.summary,
-      entry.extracted_snippet,
-      entry.page_changed ? 1 : 0,
-      entry.oracle_name || 'web_portal',
-      entry.cache_hit ? 1 : 0,
-      entry.entity_validated !== false ? 1 : 0,
-      entry.next_poll_after ?? null
-    );
 
-    const logRecord: CheckLogRecord = {
-      id,
-      checked_at: checkedAt,
-      ...entry
-    };
-    cloudDatabaseSync.replicateRow('check_logs', logRecord as unknown as Record<string, unknown>).catch(() => {});
-    return logRecord;
+    return runInTransaction(() => {
+      db.prepare(`
+        INSERT INTO check_logs (
+          id, tenant_id, watch_id, checked_at, http_status, is_open, confidence, summary, extracted_snippet,
+          page_changed, oracle_name, cache_hit, entity_validated, next_poll_after
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        tenantId,
+        entry.watch_id,
+        checkedAt,
+        entry.http_status,
+        entry.is_open ? 1 : 0,
+        entry.confidence,
+        entry.summary,
+        entry.extracted_snippet,
+        entry.page_changed ? 1 : 0,
+        entry.oracle_name || 'web_portal',
+        entry.cache_hit ? 1 : 0,
+        entry.entity_validated !== false ? 1 : 0,
+        entry.next_poll_after ?? null
+      );
+
+      const logRecord: CheckLogRecord = {
+        id,
+        tenant_id: tenantId,
+        checked_at: checkedAt,
+        ...entry
+      };
+
+      enqueueOutbox({
+        tenant_id: tenantId,
+        event_type: 'check_log_created',
+        entity_table: 'check_logs',
+        entity_id: id,
+        payload: logRecord as unknown as Record<string, unknown>,
+        version: 1
+      });
+
+      return logRecord;
+    });
   }
 
-  listCheckLogs(watchId?: string, limit = 30): CheckLogRecord[] {
-    const rows = (
-      watchId
-        ? db.prepare('SELECT * FROM check_logs WHERE watch_id = ? ORDER BY checked_at DESC LIMIT ?').all(watchId, limit)
-        : db.prepare('SELECT * FROM check_logs ORDER BY checked_at DESC LIMIT ?').all(limit)
-    ) as Record<string, unknown>[];
+  listCheckLogs(watchId?: string, limit = 30, tenantId?: string): CheckLogRecord[] {
+    let sql = 'SELECT * FROM check_logs';
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (tenantId && tenantId !== 'all') {
+      conditions.push('tenant_id = ?');
+      params.push(tenantId);
+    }
+    if (watchId) {
+      conditions.push('watch_id = ?');
+      params.push(watchId);
+    }
+
+    if (conditions.length > 0) {
+      sql += ' WHERE ' + conditions.join(' AND ');
+    }
+    sql += ' ORDER BY checked_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
 
     return rows.map((r) => ({
       id: String(r.id),
+      tenant_id: String(r.tenant_id || DEFAULT_TENANT_ID),
       watch_id: String(r.watch_id),
       checked_at: String(r.checked_at),
       http_status: r.http_status !== null ? Number(r.http_status) : null,

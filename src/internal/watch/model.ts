@@ -1,11 +1,34 @@
 export type WatchStatus =
   | 'hibernating'
+  | 'exponential_approach'
+  | 'active_sampling'
+  | 'triggered'
+  | 'cooled_down'
+  | 'archived'
+  | 'config_error'
+  | 'paused'
+  // Backward compatibility aliases
   | 'active_monitoring'
   | 'proposed_open'
   | 'triggered_open'
-  | 'config_error'
-  | 'expired_closed'
-  | 'paused';
+  | 'expired_closed';
+
+export type UniversalEventCategory =
+  | 'product_launch'
+  | 'ticket_drop'
+  | 'regulatory_deadline'
+  | 'hackathon'
+  | 'visa_slot'
+  | 'court_docket'
+  | 'flight_drop'
+  | 'conference'
+  | 'scholarship'
+  | 'fellowship'
+  | 'grant'
+  | 'admission'
+  | 'calendar_reminder'
+  | 'event'
+  | 'general';
 
 export type TriggerType = 'web_monitor' | 'scheduled_date' | 'hybrid';
 export type NotificationChannelType =
@@ -46,18 +69,22 @@ export interface OracleResponseRecord {
 
 export interface WatchRecord {
   id: string;
+  tenant_id: string;
+  version: number;
   title: string;
   category: string;
   chat_context: string;
   source_chat_client: string;
   target_url: string | null;
   secondary_url: string | null;
+  canonical_url_key: string | null;
   trigger_type: TriggerType;
   condition_text: string;
   expected_keywords: string[];
   closed_keywords: string[];
   window_start_date: string | null;
   window_label: string | null;
+  rrule: string | null;
   check_interval_minutes: number;
   poll_after: number;
   is_auto_resolve: boolean;
@@ -79,6 +106,7 @@ export interface WatchRecord {
 
 export interface CheckLogRecord {
   id: string;
+  tenant_id: string;
   watch_id: string;
   checked_at: string;
   http_status: number | null;
@@ -95,11 +123,14 @@ export interface CheckLogRecord {
 
 export interface CreateWatchInput {
   title: string;
+  tenant_id?: string;
   category?: string;
   chat_context: string;
   source_chat_client?: string;
   target_url?: string | null;
   secondary_url?: string | null;
+  canonical_url_key?: string | null;
+  rrule?: string | null;
   trigger_type?: TriggerType;
   condition_text?: string;
   expected_keywords?: string[];

@@ -9,6 +9,18 @@ if (config.dbPath !== ':memory:') {
 
 export const db = new DatabaseSync(config.dbPath);
 
+export function runInTransaction<T>(fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const res = fn();
+    db.exec('COMMIT');
+    return res;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 export function ensureColumnExists(table: string, column: string, definition: string): void {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === column)) {
@@ -22,6 +34,8 @@ export function runSchemaMigrations(): void {
 
     CREATE TABLE IF NOT EXISTS watches (
       id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+      version INTEGER NOT NULL DEFAULT 1,
       title TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'scholarship',
       chat_context TEXT NOT NULL,
@@ -55,6 +69,7 @@ export function runSchemaMigrations(): void {
 
     CREATE TABLE IF NOT EXISTS check_logs (
       id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
       watch_id TEXT NOT NULL,
       checked_at TEXT NOT NULL,
       http_status INTEGER,
@@ -71,6 +86,8 @@ export function runSchemaMigrations(): void {
 
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+      version INTEGER NOT NULL DEFAULT 1,
       watch_id TEXT NOT NULL,
       watch_title TEXT NOT NULL,
       channel TEXT NOT NULL,
@@ -83,11 +100,20 @@ export function runSchemaMigrations(): void {
       created_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS channel_configs (
-      channel TEXT PRIMARY KEY,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      config_json TEXT NOT NULL DEFAULT '{}',
-      updated_at TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS outbox (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+      event_type TEXT NOT NULL,
+      entity_table TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_retry_at INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      processed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS demo_portal_state (
@@ -103,6 +129,8 @@ export function runSchemaMigrations(): void {
     );
   `);
 
+  ensureColumnExists('watches', 'tenant_id', "TEXT NOT NULL DEFAULT 'tenant_default'");
+  ensureColumnExists('watches', 'version', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumnExists('watches', 'secondary_url', 'TEXT');
   ensureColumnExists('watches', 'poll_after', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumnExists('watches', 'is_auto_resolve', 'INTEGER NOT NULL DEFAULT 1');
@@ -111,20 +139,72 @@ export function runSchemaMigrations(): void {
   ensureColumnExists('watches', 'resolution_config', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumnExists('watches', 'oracle_responses', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumnExists('watches', 'canonical_url_key', 'TEXT');
+  ensureColumnExists('watches', 'rrule', 'TEXT');
 
+  ensureColumnExists('check_logs', 'tenant_id', "TEXT NOT NULL DEFAULT 'tenant_default'");
   ensureColumnExists('check_logs', 'oracle_name', "TEXT DEFAULT 'web_portal'");
   ensureColumnExists('check_logs', 'cache_hit', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumnExists('check_logs', 'entity_validated', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumnExists('check_logs', 'next_poll_after', 'INTEGER');
 
+  ensureColumnExists('notifications', 'tenant_id', "TEXT NOT NULL DEFAULT 'tenant_default'");
+  ensureColumnExists('notifications', 'version', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumnExists('notifications', 'idempotency_key', 'TEXT');
   ensureColumnExists('notifications', 'attempt_count', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumnExists('notifications', 'next_retry_at', 'INTEGER');
   ensureColumnExists('notifications', 'last_error', 'TEXT');
 
+  // Multi-tenant channel_configs migration: ensure compound primary key (tenant_id, channel)
+  const channelTableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='channel_configs'").get();
+  if (channelTableInfo) {
+    const cols = db.prepare('PRAGMA table_info(channel_configs)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'tenant_id')) {
+      db.exec(`
+        CREATE TABLE channel_configs_mt (
+          tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+          channel TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, channel)
+        );
+        INSERT OR IGNORE INTO channel_configs_mt (tenant_id, channel, enabled, config_json, updated_at)
+          SELECT 'tenant_default', channel, enabled, config_json, updated_at FROM channel_configs;
+        DROP TABLE channel_configs;
+        ALTER TABLE channel_configs_mt RENAME TO channel_configs;
+      `);
+    }
+  } else {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS channel_configs (
+        tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+        channel TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        config_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, channel)
+      );
+    `);
+  }
+
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency
     ON notifications(idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_watches_tenant_status
+    ON watches(tenant_id, status, poll_after);
+
+    CREATE INDEX IF NOT EXISTS idx_check_logs_tenant
+    ON check_logs(tenant_id, checked_at);
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_tenant
+    ON notifications(tenant_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_outbox_pending
+    ON outbox(status, next_retry_at, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_outbox_tenant_entity
+    ON outbox(tenant_id, entity_table, entity_id);
   `);
 }

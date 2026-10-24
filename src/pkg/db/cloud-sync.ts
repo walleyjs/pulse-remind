@@ -46,6 +46,16 @@ export class CloudDatabaseSync {
     };
   }
 
+  isCloudConfigured(): boolean {
+    if (config.cloud.storageProvider === 'supabase' && config.cloud.supabaseUrl && config.cloud.supabaseKey) {
+      return true;
+    }
+    if (config.cloud.storageProvider === 'turso' && config.cloud.tursoUrl && config.cloud.tursoAuthToken) {
+      return true;
+    }
+    return false;
+  }
+
   async replicateRow(table: string, payload: Record<string, unknown> | Array<Record<string, unknown>>): Promise<boolean> {
     if (config.cloud.storageProvider === 'supabase' && config.cloud.supabaseUrl && config.cloud.supabaseKey) {
       try {
