@@ -3,6 +3,7 @@ import { initDatabase } from '../db/bootstrap.ts';
 import { chatExtractorService } from '../../internal/extractor/service.ts';
 import { watchService } from '../../internal/watch/service.ts';
 import { executeMcpTool } from '../mcp/tools.ts';
+import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 
 export interface TranscriptStep {
   step_index?: number;
@@ -104,37 +105,48 @@ export async function evaluateTranscriptTurnForHook(
   // 1. Check if the user is replying with their email address to bind an unbound watch
   const existingWatches = watchService.listWatches();
   const hasUnboundWatches = existingWatches.some(
-    (w) => !w.recipient_email || w.recipient_email === 'student@university.edu'
+    (w) => !w.recipient_email || isDisallowedAmbientEmail(w.recipient_email)
   );
-  const emailMatch = userText.match(EMAIL_EXTRACT_REGEX);
-  const emailIntent =
-    hasUnboundWatches ||
-    /\b(?:send\s+(?:my\s+|the\s+)?(?:reminders?|alerts?|updates?|notifications?)|email\s+is|my\s+email|use\s+email|send\s+to|notify\s+(?:me\s+at)?)\b/i.test(
+
+  const isNegativeEmailContext =
+    /\b(?:not\s+(?:my|the|your)|wrong\s+email|isn'?t\s+(?:my|the)|is\s+not\s+(?:my|the)|don'?t\s+use|remove\s+email|stop\s+using|alert\s+i\s+got|why\s+did\s+you)\b/i.test(
       userText
     );
 
+  const emailMatch = userText.match(EMAIL_EXTRACT_REGEX);
+  const candidateEmail = emailMatch ? emailMatch[1].trim() : null;
+  const isPureEmailInput = candidateEmail ? /^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$/.test(userText.trim()) : false;
+  const hasExplicitBindingPhrase =
+    /\b(?:(?:my\s+)?email\s+(?:is|address\s+is)|send\s+(?:my\s+|the\s+)?(?:alerts?|reminders?|updates?|notifications?)\s+to|notify\s+(?:me\s+at)?|use\s+email)\b/i.test(
+      userText
+    );
+
+  const isAffirmativeBinding =
+    !isNegativeEmailContext &&
+    hasUnboundWatches &&
+    candidateEmail !== null &&
+    (isPureEmailInput || hasExplicitBindingPhrase) &&
+    !isDisallowedAmbientEmail(candidateEmail);
+
   if (
-    emailIntent &&
-    emailMatch &&
+    isAffirmativeBinding &&
+    candidateEmail &&
     !toolAlreadyCalled('set_notification_destination') &&
     !toolAlreadyCalled('create_opportunity_watch')
   ) {
-    const candidateEmail = emailMatch[1];
-    if (candidateEmail !== 'student@university.edu') {
-      await executeMcpTool('set_notification_destination', {
-        recipient_email: candidateEmail,
-        save_as_default: true
-      });
-      return {
-        hookAction: 'auto_bound_email',
-        boundEmail: candidateEmail,
-        injectSteps: [
-          {
-            ephemeralMessage: `[PulseRemind Hook] Bound ${candidateEmail} as the user's persistent default email across their active reminder watch(es).`
-          }
-        ]
-      };
-    }
+    await executeMcpTool('set_notification_destination', {
+      recipient_email: candidateEmail,
+      save_as_default: true
+    });
+    return {
+      hookAction: 'auto_bound_email',
+      boundEmail: candidateEmail,
+      injectSteps: [
+        {
+          ephemeralMessage: `[PulseRemind Hook] Bound ${candidateEmail} as the user's persistent default email across their active reminder watch(es).`
+        }
+      ]
+    };
   }
 
   // 2. Check if the user mentioned an upcoming event/deadline/opportunity and the model forgot to call the MCP capture tool
@@ -153,7 +165,7 @@ export async function evaluateTranscriptTurnForHook(
       const res = (await executeMcpTool('extract_watches_from_chat', {
         transcript: userText,
         auto_create: true,
-        recipient_email: emailMatch ? emailMatch[1] : undefined
+        recipient_email: isAffirmativeBinding && candidateEmail ? candidateEmail : undefined
       })) as {
         delivery_status: string;
         bound_email: string | null;

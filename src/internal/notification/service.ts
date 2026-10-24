@@ -6,6 +6,7 @@ import { notificationRepository, NotificationRepository } from './repository.ts'
 import { emailProvider, EmailProvider } from './providers/email.provider.ts';
 import { messagingWebhookProvider, MessagingWebhookProvider } from './providers/webhook.provider.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
+import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
 
 export class NotificationService {
   private readonly repo: NotificationRepository;
@@ -178,8 +179,11 @@ export class NotificationService {
         const recipient =
           watch.recipient_email ||
           channelCfg?.config?.default_recipient ||
-          this.repo.getSavedDefaultEmail(tenantId) ||
-          'student@university.edu';
+          this.repo.getSavedDefaultEmail(tenantId);
+        if (!recipient || isDisallowedAmbientEmail(recipient)) {
+          // Skip email dispatch if destination is unconfigured or a disallowed ambient placeholder
+          continue;
+        }
         const html = this.email.buildOpportunityOpenHtml(watch, evaluation);
         const icsAttachment = this.email.buildWatchIcsAttachment(watch);
         const sendResult = await this.email.sendEmail({

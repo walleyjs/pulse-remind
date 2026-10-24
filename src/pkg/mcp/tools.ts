@@ -7,6 +7,7 @@ import type { NotificationChannelType, TriggerType } from '../../internal/watch/
 import { watchService } from '../../internal/watch/service.ts';
 import { buildWatchCalendarLinks } from '../calendar/ics.ts';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant.ts';
+import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 
 export interface McpToolAnnotations {
   title?: string;
@@ -31,9 +32,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_opportunity_watch',
     description:
-      'Use this tool during an AI chat whenever the user wants a reminder for ANY future event, registration, ticket sale, product launch, conference, deadline, fellowship, scholarship, or plan that is not open or due yet (e.g., happening at the end of the month, next month, or early next year). Supports both scheduled-date reminders and live web-page monitoring. If the user mentioned their email address, pass it in `recipient_email`. If `delivery_status` returns `ACTION_REQUIRED_ASK_USER_FOR_EMAIL`, ask the user for their email in chat and call `set_notification_destination`. Always share the returned `calendar_links.google_calendar_url` in your response.',
+      'Creates a monitored watch or scheduled reminder for an upcoming event, ticket release, product launch, conference, registration window, or deadline.',
     annotations: {
-      title: 'Create Event or Opportunity Reminder Watch',
+      title: 'Create Event Watch or Scheduled Reminder',
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
@@ -45,7 +46,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         title: {
           type: 'string',
           description:
-            'Name of the event, reminder, conference, ticket drop, launch, or opportunity (e.g., "Apple WWDC 2027 Registration", "Swedish Institute Scholarship 2027–2028", "Global AI Fellowship 2027")'
+            'Name of the event, opportunity, or reminder (e.g., "Apple WWDC 2027 Registration", "Swedish Institute Scholarship 2027–2028")'
         },
         category: {
           type: 'string',
@@ -71,31 +72,31 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           enum: ['web_monitor', 'scheduled_date', 'hybrid'],
           description:
-            'Use "scheduled_date" for pure date/time event reminders without a webpage, or "web_monitor" / "hybrid" to monitor a webpage until registration/applications open.'
+            'Trigger mechanism: scheduled_date for pure time reminders, web_monitor to check page status, or hybrid for both.'
         },
         chat_context: {
           type: 'string',
           description:
-            'Short, non-PII action reminder of what the user planned or needs to do when the event arrives/opens (e.g., "Book early-bird pass and reserve hotel" or "Submit 2-page proposal"). Do NOT include sensitive personal identity.'
+            'Action checklist or preparation notes for the event. Omit sensitive personal identity data.'
         },
         target_url: {
           type: 'string',
-          description: 'Optional URL of the event, ticket, or application page to monitor for opening'
+          description: 'Optional URL of the webpage or portal to monitor for status changes'
         },
         timeframe_text: {
           type: 'string',
           description:
-            'When the event or opening is expected (e.g., "end of this month", "next Friday", "early next year", "Spring 2027", "November 15, 2026 23:59 AoE")'
+            'Anticipated date, timeframe, or deadline expression (e.g., "end of month", "next Friday", "November 15, 2026 AoE")'
         },
         condition_text: {
           type: 'string',
           description:
-            'Specific condition to detect or trigger on (e.g., "Registration opens", "Tickets go on sale", "Applications open")'
+            'Specific trigger condition to detect (e.g., "Registration opens", "Tickets go on sale")'
         },
         recipient_email: {
           type: 'string',
           description:
-            'Optional email address to notify when triggered. If already saved in the user profile, it is bound automatically; if not yet saved, omit it and follow the returned assistant_instruction to ask the user in chat.'
+            'Optional destination email address for alert delivery.'
         },
         notify_channels: {
           type: 'array',
@@ -112,9 +113,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'set_notification_destination',
     description:
-      'Binds the user\'s email address (and optional push channels) to their active reminder watch(es) right inside the AI chat and saves it as their persistent default so future reminders never need to ask again. Call this tool immediately whenever the user replies with their email address in chat.',
+      'Configures destination email and push notification channels for monitored watches belonging to the active user.',
     annotations: {
-      title: 'Set Email & Push Notification Destination',
+      title: 'Configure Notification Destination',
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
@@ -125,19 +126,19 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         recipient_email: {
           type: 'string',
-          description: 'The user\'s email address for receiving reminder and opening alerts'
+          description: 'Destination email address for notifications.'
         },
         watch_id: {
           type: 'string',
-          description: 'Optional specific watch ID to bind (if omitted, binds all unbound watches and the most recent watch)'
+          description: 'Optional identifier of a specific watch to update. If omitted, applies to all active watches.'
         },
         save_as_default: {
           type: 'boolean',
-          description: 'If true (default), remembers this email for all future reminders created in chat'
+          description: 'Whether to store this destination for future watches created in this session.'
         },
         ntfy_topic: {
           type: 'string',
-          description: 'Optional ntfy.sh mobile push topic name'
+          description: 'Optional mobile push topic name.'
         },
         notify_channels: {
           type: 'array',
@@ -145,7 +146,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
             type: 'string',
             enum: ['in_app', 'email', 'web_push', 'slack', 'discord', 'telegram', 'whatsapp']
           },
-          description: 'Channels to enable for the user'
+          description: 'Enabled notification channels.'
         }
       },
       required: ['recipient_email']
@@ -154,9 +155,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'extract_watches_from_chat',
     description:
-      'Analyzes a conversation snippet where a user discusses future events, conferences, ticket sales, launches, deadlines, or scholarships, automatically extracts all deferred plans, and schedules reminders/watches for them.',
+      'Extracts event entities, deadlines, and action checklists from conversation text and provisions corresponding reminder watches.',
     annotations: {
-      title: 'Extract Event & Opportunity Reminders From Chat',
+      title: 'Extract Event Watches From Chat',
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
@@ -167,15 +168,15 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         transcript: {
           type: 'string',
-          description: 'Conversation messages between the user and the AI assistant'
+          description: 'Conversation text containing upcoming events, dates, or deadlines.'
         },
         auto_create: {
           type: 'boolean',
-          description: 'If true, automatically creates active watches/reminders for every extracted event or opportunity'
+          description: 'Whether to automatically provision watches for extracted items.'
         },
         recipient_email: {
           type: 'string',
-          description: 'Optional user email for notifications'
+          description: 'Optional user email address for notifications.'
         }
       },
       required: ['transcript']
@@ -183,9 +184,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'list_active_watches',
-    description: 'Lists all upcoming event reminders, ticket/launch watches, and web-monitored opportunities tracked for the user.',
+    description: 'Lists tracked event reminders, ticket watches, and monitored opportunities for the active user.',
     annotations: {
-      title: 'List Active Event Reminders & Watches',
+      title: 'List Active Event Watches',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -205,7 +206,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'check_watch_now',
     description:
-      'Immediately evaluates a tracked event reminder or scrapes its target webpage via the Resolution Engine to check if registration/tickets/applications are open, and dispatches notifications if triggered.',
+      'Evaluates the current state of a specified watch and dispatches notifications if state conditions are met.',
     annotations: {
       title: 'Check Event Watch Now',
       readOnlyHint: true,
@@ -218,7 +219,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         watch_id: {
           type: 'string',
-          description: 'ID of the watch to check (e.g., "watch_...")'
+          description: 'Identifier of the watch to check.'
         }
       },
       required: ['watch_id']
@@ -226,7 +227,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'update_or_cancel_watch',
-    description: 'Updates the status, target URL, or notification settings of an existing event reminder/watch, or deletes it.',
+    description: 'Updates the status (pause, resume, delete) or settings of an existing event watch.',
     annotations: {
       title: 'Update or Cancel Event Watch',
       readOnlyHint: false,
@@ -239,12 +240,12 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         watch_id: {
           type: 'string',
-          description: 'ID of the watch'
+          description: 'Identifier of the watch.'
         },
         action: {
           type: 'string',
           enum: ['pause', 'resume', 'delete'],
-          description: 'Action to perform on the watch'
+          description: 'Action to perform: pause, resume, or delete.'
         }
       },
       required: ['watch_id', 'action']
@@ -278,9 +279,9 @@ export async function executeMcpTool(
             : `${baseUrl}/demo/scholarships/global-ai-fellowship`;
 
       const providedEmail =
-        args.recipient_email && String(args.recipient_email).trim() !== 'student@university.edu'
+        args.recipient_email && !isDisallowedAmbientEmail(String(args.recipient_email))
           ? String(args.recipient_email).trim()
-          : oauthEmail || undefined;
+          : (oauthEmail && !isDisallowedAmbientEmail(oauthEmail) ? oauthEmail : undefined);
 
       if (providedEmail) {
         notificationService.setSavedDefaultEmail(providedEmail, tenantId);
@@ -306,16 +307,16 @@ export async function executeMcpTool(
       }, tenantId);
 
       const calendarLinks = buildWatchCalendarLinks(watch, baseUrl);
-      const hasBoundEmail = Boolean(watch.recipient_email && watch.recipient_email !== 'student@university.edu');
+      const hasBoundEmail = Boolean(watch.recipient_email && !isDisallowedAmbientEmail(watch.recipient_email));
 
       return {
         success: true,
+        watch_id: watch.id,
+        status: 'created',
         delivery_status: hasBoundEmail ? 'BOUND_READY' : 'ACTION_REQUIRED_ASK_USER_FOR_EMAIL',
+        destination_status: hasBoundEmail ? 'bound' : 'unbound',
         bound_email: hasBoundEmail ? watch.recipient_email : null,
         calendar_links: calendarLinks,
-        assistant_instruction: hasBoundEmail
-          ? `Confirm that "${watch.title}" is being monitored and alerts will be sent to ${watch.recipient_email}. Include the clickable Google Calendar link (${calendarLinks.google_calendar_url}) so the user can also add a native phone/desktop calendar alarm in 1 click.`
-          : `IMPORTANT: The watch for "${watch.title}" is saved, and you should share the 1-click Google Calendar link (${calendarLinks.google_calendar_url}), BUT no email address is on file yet. Ask the user right now in chat: "What email address should I send your opening alert to?" When they reply with their email, call \`set_notification_destination\` (it will remember their email automatically for all future reminders).`,
         message: `Reminder watch created for "${watch.title}" (Window: ${watch.window_label}).`,
         claim_url: watch.resolution_config.provider_metadata.claim_url,
         subscriber_token: watch.resolution_config.provider_metadata.subscriber_token,
@@ -325,8 +326,8 @@ export async function executeMcpTool(
 
     case 'set_notification_destination': {
       const recipientEmail = String(args.recipient_email || '').trim();
-      if (!recipientEmail || !recipientEmail.includes('@')) {
-        throw new Error('A valid recipient_email is required.');
+      if (!recipientEmail || !recipientEmail.includes('@') || isDisallowedAmbientEmail(recipientEmail)) {
+        throw new Error('A valid, non-ambient recipient_email is required.');
       }
       const watchId = args.watch_id ? String(args.watch_id) : undefined;
       const saveAsDefault = args.save_as_default !== false;
@@ -349,13 +350,14 @@ export async function executeMcpTool(
 
       return {
         success: true,
+        status: 'updated',
         delivery_status: 'BOUND_READY',
+        destination_status: 'bound',
         bound_email: recipientEmail,
         saved_as_default_for_future_chats: saveAsDefault,
         updated_watches_count: updatedWatches.length,
         updated_watches: updatedWatches,
-        calendar_links: calendarLinks,
-        assistant_instruction: `Confirm to the user that ${recipientEmail} is now bound to their reminder(s) and saved as their default for future chats.`
+        calendar_links: calendarLinks
       };
     }
 
@@ -366,9 +368,9 @@ export async function executeMcpTool(
       const createdWatches = [];
 
       const providedEmail =
-        args.recipient_email && String(args.recipient_email).trim() !== 'student@university.edu'
+        args.recipient_email && !isDisallowedAmbientEmail(String(args.recipient_email))
           ? String(args.recipient_email).trim()
-          : oauthEmail || undefined;
+          : (oauthEmail && !isDisallowedAmbientEmail(oauthEmail) ? oauthEmail : undefined);
 
       if (providedEmail) {
         notificationService.setSavedDefaultEmail(providedEmail, tenantId);
@@ -382,19 +384,18 @@ export async function executeMcpTool(
       }
 
       const firstWatch = createdWatches[0] || null;
-      const hasBoundEmail = Boolean(firstWatch?.recipient_email);
+      const hasBoundEmail = Boolean(firstWatch?.recipient_email && !isDisallowedAmbientEmail(firstWatch.recipient_email));
 
       return {
         success: true,
+        status: 'extracted',
         delivery_status: hasBoundEmail ? 'BOUND_READY' : 'ACTION_REQUIRED_ASK_USER_FOR_EMAIL',
-        bound_email: firstWatch?.recipient_email || null,
+        destination_status: hasBoundEmail ? 'bound' : 'unbound',
+        bound_email: hasBoundEmail ? firstWatch!.recipient_email : null,
         extracted_count: extracted.length,
         extracted_opportunities: extracted,
         created_watches: createdWatches,
-        calendar_links: firstWatch ? buildWatchCalendarLinks(firstWatch, baseUrl) : null,
-        assistant_instruction: hasBoundEmail
-          ? `Confirm the extracted reminders and share the Google Calendar link.`
-          : `Ask the user in chat what email address they want alerts sent to, then call \`set_notification_destination\`.`
+        calendar_links: firstWatch ? buildWatchCalendarLinks(firstWatch, baseUrl) : null
       };
     }
 

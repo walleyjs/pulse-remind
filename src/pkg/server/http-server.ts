@@ -16,6 +16,7 @@ import { cloudDatabaseSync } from '../db/cloud-sync.ts';
 import { outboxProcessor } from '../db/outbox.ts';
 import { extractTenantId, createOAuthJwtToken } from '../tenant/tenant.ts';
 import { buildWatchIcsFeed, buildWatchCalendarLinks } from '../calendar/ics.ts';
+import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
 
@@ -755,9 +756,9 @@ export function createAppServer(): http.Server {
           notify_channels: Array.isArray(body.notify_channels)
             ? (body.notify_channels as NotificationChannelType[])
             : ['in_app', 'email'],
-          recipient_email: body.recipient_email
+          recipient_email: body.recipient_email && !isDisallowedAmbientEmail(String(body.recipient_email))
             ? String(body.recipient_email)
-            : 'student@university.edu'
+            : undefined
         }, tenantId);
 
         sendJson(res, 201, { watch });
@@ -823,9 +824,10 @@ export function createAppServer(): http.Server {
         const body = await readJsonBody(req);
         const transcript = String(body.transcript || '');
         const autoCreate = Boolean(body.auto_create ?? true);
-        const recipientEmail = body.recipient_email
-          ? String(body.recipient_email)
-          : 'student@university.edu';
+        const recipientEmail =
+          body.recipient_email && !isDisallowedAmbientEmail(String(body.recipient_email))
+            ? String(body.recipient_email)
+            : undefined;
 
         const extracted = chatExtractorService.extractWatchesFromTranscript(transcript, baseUrl);
         const createdWatches = [];
@@ -960,7 +962,7 @@ export function createAppServer(): http.Server {
           oracle_responses: [],
           status: 'triggered_open',
           notify_channels: ['in_app', 'email'],
-          recipient_email: 'student@university.edu',
+          recipient_email: notificationService.getSavedDefaultEmail(tenantId) || 'alerts@pulseremind.ai',
           last_checked_at: new Date().toISOString(),
           last_snapshot_hash: null,
           last_status_summary: 'Test dispatch',
@@ -1024,7 +1026,7 @@ export function createAppServer(): http.Server {
           .find((w) => w.resolution_config?.provider_metadata?.subscriber_token === token);
         const watchTitle = watch ? watch.title : `Reminder (${token})`;
         const currentEmail =
-          watch && watch.recipient_email && watch.recipient_email !== 'student@university.edu'
+          watch && watch.recipient_email && !isDisallowedAmbientEmail(watch.recipient_email)
             ? watch.recipient_email
             : '';
         const currentNtfy = watch?.resolution_config?.provider_metadata?.ntfy_topic || `pulseremind-${token.slice(4, 10)}`;

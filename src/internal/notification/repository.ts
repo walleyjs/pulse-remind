@@ -4,6 +4,7 @@ import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
 import { enqueueOutbox } from '../../pkg/db/outbox.ts';
 import { generateVapidKeys } from '../../pkg/webpush/crypto.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
+import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
 import type { ChannelConfigRecord, NotificationChannelType, NotificationRecord } from './model.ts';
 
 function mapNotificationRow(r: Record<string, unknown>): NotificationRecord {
@@ -46,7 +47,7 @@ export class NotificationRepository {
         channel: 'email',
         enabled: 1,
         config: {
-          default_recipient: tenantId === DEFAULT_TENANT_ID ? process.env.DEFAULT_RECIPIENT_EMAIL || '' : '',
+          default_recipient: '',
           smtp_host: '',
           smtp_port: '587',
           smtp_user: '',
@@ -338,13 +339,13 @@ export class NotificationRepository {
     // Check tenant's channel config
     const emailCfg = this.getChannelConfigs(tenantId).find((c) => c.channel === 'email');
     const saved = (emailCfg?.config?.default_recipient || '').trim();
-    if (saved && saved !== 'student@university.edu') {
+    if (saved && !isDisallowedAmbientEmail(saved)) {
       return saved;
     }
-    // Only check env var if default tenant
+    // Only check env var if explicitly set and not disallowed
     if (tenantId === DEFAULT_TENANT_ID) {
       const envEmail = (process.env.DEFAULT_RECIPIENT_EMAIL || '').trim();
-      if (envEmail && envEmail !== 'student@university.edu') {
+      if (envEmail && !isDisallowedAmbientEmail(envEmail)) {
         return envEmail;
       }
     }
@@ -353,6 +354,11 @@ export class NotificationRepository {
 
   setSavedDefaultEmail(email: string, tenantId = DEFAULT_TENANT_ID): ChannelConfigRecord {
     const cleanEmail = email.trim();
+    if (cleanEmail !== '' && isDisallowedAmbientEmail(cleanEmail)) {
+      // Do not store disallowed ambient or placeholder emails
+      const existing = this.getChannelConfigs(tenantId).find((c) => c.channel === 'email');
+      return existing!;
+    }
     const existing = this.getChannelConfigs(tenantId).find((c) => c.channel === 'email');
     const currentConfig = existing?.config || {
       default_recipient: '',

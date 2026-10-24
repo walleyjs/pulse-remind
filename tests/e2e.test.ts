@@ -2095,6 +2095,154 @@ test('25. Multi-Tenant Zero-Leak Viewport, Route Separation & Action Checklist P
   watchService.deleteWatch(watchB.id, tenantBeta);
 });
 
+test('26. Declarative Schema Neutrality & Anti-Prompt-Injection Linter (OWASP LLM01/07)', async () => {
+  const { MCP_TOOLS } = await import('../src/pkg/mcp/tools.ts');
+  const { buildOpenApiSpec, buildGeminiToolsManifest } = await import('../src/pkg/server/openapi.ts');
+
+  const IMPERATIVE_HIJACK_PATTERN =
+    /\b(use this tool during an ai chat whenever|use this tool whenever|call this tool immediately|ask the user in chat|always share the returned|follow the returned assistant_instruction|compels immediate execution|prescribe classifier behavior)\b/i;
+
+  // 26a. Scan all MCP tool definitions
+  for (const tool of MCP_TOOLS) {
+    assert.equal(
+      IMPERATIVE_HIJACK_PATTERN.test(tool.description),
+      false,
+      `Tool "${tool.name}" description must not contain imperative prompt hijacking directives: "${tool.description}"`
+    );
+    const properties = (tool.inputSchema.properties || {}) as Record<string, { description?: string }>;
+    for (const [propName, propDef] of Object.entries(properties)) {
+      if (propDef.description) {
+        assert.equal(
+          IMPERATIVE_HIJACK_PATTERN.test(propDef.description),
+          false,
+          `Tool "${tool.name}" parameter "${propName}" description must be purely declarative: "${propDef.description}"`
+        );
+      }
+    }
+  }
+
+  // 26b. Scan OpenAPI 3.1 specification
+  const openApi = buildOpenApiSpec('https://pulse-remind.onrender.com');
+  const specString = JSON.stringify(openApi);
+  assert.equal(
+    IMPERATIVE_HIJACK_PATTERN.test(specString),
+    false,
+    'OpenAPI 3.1 specification must be completely free of imperative prompt injection patterns'
+  );
+
+  // 26c. Scan Gemini Extension manifest
+  const geminiManifest = buildGeminiToolsManifest('https://pulse-remind.onrender.com');
+  const geminiString = JSON.stringify(geminiManifest);
+  assert.equal(
+    IMPERATIVE_HIJACK_PATTERN.test(geminiString),
+    false,
+    'Gemini Tools manifest must be free of imperative prompt hijacking patterns'
+  );
+});
+
+test('27. Neutral Tool Response Payloads & Zero-Hallucination Cold-Start', async () => {
+  notificationService.setSavedDefaultEmail('');
+
+  // 27a. create_opportunity_watch returns structured state without imperative assistant_instruction
+  const coldWatchRes = (await executeMcpTool('create_opportunity_watch', {
+    title: 'Glastonbury Festival 2027 Early-Bird Passes',
+    category: 'tickets',
+    trigger_type: 'web_monitor',
+    target_url: 'https://glastonbury.co.uk',
+    timeframe_text: 'October 2026',
+    chat_context: 'Register early and monitor ticket drop.'
+  })) as Record<string, any>;
+
+  assert.equal(coldWatchRes.success, true);
+  assert.equal(coldWatchRes.status, 'created');
+  assert.equal(coldWatchRes.destination_status, 'unbound');
+  assert.equal(coldWatchRes.bound_email, null);
+  assert.equal(coldWatchRes.watch.recipient_email, null, 'Must not populate any ambient developer email');
+  assert.equal(coldWatchRes.assistant_instruction, undefined, 'Must not return imperative assistant_instruction');
+  assert.ok(coldWatchRes.claim_url, 'Must return out-of-band claim URL for private binding');
+  assert.ok(coldWatchRes.calendar_links?.google_calendar_url);
+
+  // 27b. set_notification_destination rejects ambient/disallowed developer emails
+  await assert.rejects(
+    async () => {
+      await executeMcpTool('set_notification_destination', {
+        recipient_email: 'developer@example.com',
+        watch_id: coldWatchRes.watch_id
+      });
+    },
+    /A valid, non-ambient recipient_email is required/,
+    'Must strictly reject ambient developer emails like developer@example.com'
+  );
+
+  await assert.rejects(
+    async () => {
+      await executeMcpTool('set_notification_destination', {
+        recipient_email: 'student@university.edu',
+        watch_id: coldWatchRes.watch_id
+      });
+    },
+    /A valid, non-ambient recipient_email is required/,
+    'Must strictly reject student@university.edu placeholder email'
+  );
+
+  // 27c. Legitimate user email binds cleanly
+  const legitBinding = (await executeMcpTool('set_notification_destination', {
+    recipient_email: 'real.user@company.com',
+    watch_id: coldWatchRes.watch_id,
+    save_as_default: false
+  })) as Record<string, any>;
+
+  assert.equal(legitBinding.success, true);
+  assert.equal(legitBinding.destination_status, 'bound');
+  assert.equal(legitBinding.bound_email, 'real.user@company.com');
+  assert.equal(legitBinding.assistant_instruction, undefined);
+
+  // Clean up
+  watchService.deleteWatch(coldWatchRes.watch_id);
+});
+
+test('28. Strict Parameter Provenance & Hook Context Disambiguation', async () => {
+  const { evaluateTranscriptTurnForHook } = await import('../src/pkg/hooks/post-invocation.ts');
+
+  // Create an unbound watch to simulate waiting for binding
+  const unboundWatch = watchService.createWatch({
+    title: 'NeurIPS 2027 Fellowship Submission',
+    chat_context: 'Prepare fellowship statement'
+  });
+
+  // 28a. User discussing or complaining about an email must NOT trigger binding (negative context)
+  const complaintTranscript = `
+{"step_index":1,"type":"USER_INPUT","content":"see the alert i got on chatgpt and also the email address \\"developer@example.com\\" is not my email address not the emaill address i am logged in with on chatgpt"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"I understand, let's fix that.","tool_calls":[]}
+`;
+  const hookResComplaint = await evaluateTranscriptTurnForHook(complaintTranscript);
+  assert.equal(
+    hookResComplaint.hookAction,
+    'noop',
+    'Hook must not bind email when user is reporting/discussing an unwanted email'
+  );
+
+  // 28b. Negative denial phrasing must also be rejected
+  const denialTranscript = `
+{"step_index":1,"type":"USER_INPUT","content":"that isn't my email address, don't use wrong.user@gmail.com"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Understood.","tool_calls":[]}
+`;
+  const hookResDenial = await evaluateTranscriptTurnForHook(denialTranscript);
+  assert.equal(hookResDenial.hookAction, 'noop');
+
+  // 28c. Explicit affirmative binding phrase binds the legitimate address
+  const explicitTranscript = `
+{"step_index":1,"type":"USER_INPUT","content":"Please send my alerts to my email is user.confirmed@domain.org"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Saved!","tool_calls":[]}
+`;
+  const hookResAffirmative = await evaluateTranscriptTurnForHook(explicitTranscript);
+  assert.equal(hookResAffirmative.hookAction, 'auto_bound_email');
+  assert.equal(hookResAffirmative.boundEmail, 'user.confirmed@domain.org');
+
+  // Clean up
+  watchService.deleteWatch(unboundWatch.id);
+});
+
 
 
 

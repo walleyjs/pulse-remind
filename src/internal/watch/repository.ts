@@ -6,6 +6,7 @@ import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
 import { normalizeCanonicalUrl } from '../resolution/validator.ts';
 import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
 import { notificationRepository } from '../notification/repository.ts';
+import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
 import type {
   CheckLogRecord,
   CreateWatchInput,
@@ -188,7 +189,7 @@ export class WatchRepository {
         : 'Ready for Resolution Engine check...';
 
     const explicitEmail =
-      input.recipient_email && input.recipient_email.trim() && input.recipient_email.trim() !== 'student@university.edu'
+      input.recipient_email && input.recipient_email.trim() && !isDisallowedAmbientEmail(input.recipient_email.trim())
         ? input.recipient_email.trim()
         : null;
     const resolvedEmail = explicitEmail || notificationRepository.getSavedDefaultEmail(effectiveTenantId) || null;
@@ -392,7 +393,7 @@ export class WatchRepository {
     // Bind any currently unbound watches for this tenant
     const allWatches = this.list('all', effectiveTenantId);
     for (const w of allWatches) {
-      if (!w.recipient_email || w.recipient_email === 'student@university.edu') {
+      if (!w.recipient_email || isDisallowedAmbientEmail(w.recipient_email)) {
         targetIds.add(w.id);
       }
     }
