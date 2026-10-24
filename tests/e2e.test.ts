@@ -2243,6 +2243,149 @@ test('28. Strict Parameter Provenance & Hook Context Disambiguation', async () =
   watchService.deleteWatch(unboundWatch.id);
 });
 
+test('29. Cross-Session Progressive Identity Reconciliation (Account Coalescence)', async () => {
+  const sessionAlpha = 'tenant_session_alpha_123';
+  const sessionBeta = 'tenant_session_beta_456';
+  const userEmail = 'user@example.com';
+
+  // 1. Session Alpha creates Watch 1 (e.g. Glastonbury 2027) with user's email
+  const watchAlpha = watchService.createWatch({
+    title: 'Glastonbury 2027 Ticket Drop',
+    category: 'tickets',
+    chat_context: 'Coach ticket sale registration',
+    recipient_email: userEmail
+  }, sessionAlpha);
+
+  // 2. Disjoint Session Beta creates Watch 2 (e.g. Swedish Scholarship) under different session ID
+  const watchBeta = watchService.createWatch({
+    title: 'Swedish Institute Scholarship 2027–2028',
+    category: 'scholarship',
+    chat_context: 'Prepare global professionals portfolio',
+    recipient_email: userEmail
+  }, sessionBeta);
+
+  // 3. Dual-key resolution: querying with sessionBeta and userEmail finds BOTH watches
+  const combinedWatches = watchService.listWatches('all', sessionBeta, userEmail);
+  const titles = combinedWatches.map((w) => w.title);
+  assert.ok(titles.includes('Glastonbury 2027 Ticket Drop'), 'Older session watch must be visible via dual-key resolution');
+  assert.ok(titles.includes('Swedish Institute Scholarship 2027–2028'), 'Current session watch must be visible');
+
+  // 4. Atomic identity reconciliation unifies older watch tenant_id into sessionBeta
+  const reconcileRes = watchService.reconcileTenantIdentity(userEmail, sessionBeta);
+  assert.ok(reconcileRes.migratedCount >= 1, 'Older disjoint session watch migrated into active session vault');
+
+  // 5. Querying sessionBeta directly without email now returns both watches
+  const sessionBetaWatches = watchService.listWatches('all', sessionBeta);
+  const sessionTitles = sessionBetaWatches.map((w) => w.title);
+  assert.ok(sessionTitles.includes('Glastonbury 2027 Ticket Drop'));
+  assert.ok(sessionTitles.includes('Swedish Institute Scholarship 2027–2028'));
+
+  // Clean up
+  watchService.deleteWatch(watchAlpha.id);
+  watchService.deleteWatch(watchBeta.id);
+});
+
+test('30. Unified /api/overview Multi-Tenant Viewport & Cross-Session Vault Restoration', async () => {
+  const { Readable } = await import('node:stream');
+  const sessionOld = 'tenant_ephemeral_old_999';
+  const sessionCurrent = 'tenant_1a4e70c19de7d340';
+  const userEmail = 'user@example.com';
+
+  // Create an older reminder from a previous chat session
+  const oldWatch = watchService.createWatch({
+    title: 'Gates Cambridge Fellowship 2027',
+    category: 'fellowship',
+    chat_context: 'Submit departmental reference by deadline',
+    recipient_email: userEmail
+  }, sessionOld);
+
+  // Create a new reminder in current ChatGPT session
+  const currentWatch = watchService.createWatch({
+    title: 'Apple WWDC 2027 Keynote Registration',
+    category: 'event',
+    chat_context: 'Register developer lottery pass',
+    recipient_email: userEmail
+  }, sessionCurrent);
+
+  // Simulate server HTTP dispatch
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const server = createAppServer();
+
+  const dispatch = (options: { method: string; url: string; headers?: Record<string, string> }) => {
+    return new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const req = new Readable({
+        read() {
+          this.push(null);
+        }
+      }) as any;
+
+      req.method = options.method;
+      req.url = options.url;
+      req.headers = { host: 'localhost:3456', ...(options.headers || {}) };
+
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const output = Buffer.concat(chunks).toString('utf-8');
+          resolve({
+            status: statusCode,
+            json: () => (output ? JSON.parse(output) : {})
+          });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+
+      server.emit('request', req, res);
+    });
+  };
+
+  // 30a. Accessing dashboard with ?session=tenant_1a4e70c19de7d340 returns ALL historical watches
+  const dashboardRes = await dispatch({
+    method: 'GET',
+    url: `/api/overview?session=${sessionCurrent}`
+  });
+  assert.equal(dashboardRes.status, 200);
+  assert.equal(dashboardRes.json().authenticated, true);
+  assert.equal(dashboardRes.json().user_email, userEmail);
+
+  const returnedTitles = dashboardRes.json().watches.map((w: any) => w.title);
+  assert.ok(returnedTitles.includes('Gates Cambridge Fellowship 2027'), 'Older reminder must appear on session dashboard');
+  assert.ok(returnedTitles.includes('Apple WWDC 2027 Keynote Registration'), 'Current reminder must appear on session dashboard');
+
+  // 30b. Querying by explicit email (?email=user@example.com) also returns complete vault
+  const emailQueryRes = await dispatch({
+    method: 'GET',
+    url: `/api/overview?email=${encodeURIComponent(userEmail)}`
+  });
+  assert.equal(emailQueryRes.status, 200);
+  assert.equal(emailQueryRes.json().authenticated, true);
+  assert.ok(emailQueryRes.json().watches.length >= 2);
+
+  // 30c. Unrelated tenant sees ZERO watches from this user
+  const strangerRes = await dispatch({
+    method: 'GET',
+    url: '/api/overview?session=tenant_unrelated_stranger_888'
+  });
+  assert.equal(strangerRes.status, 200);
+  assert.equal(strangerRes.json().watches.length, 0, 'Unrelated tenant must not see private user watches');
+
+  // Clean up
+  watchService.deleteWatch(oldWatch.id);
+  watchService.deleteWatch(currentWatch.id);
+});
+
 
 
 

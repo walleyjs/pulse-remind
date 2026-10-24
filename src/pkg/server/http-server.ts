@@ -14,7 +14,7 @@ import { watchService } from '../../internal/watch/service.ts';
 import { initDatabase } from '../db/bootstrap.ts';
 import { cloudDatabaseSync } from '../db/cloud-sync.ts';
 import { outboxProcessor } from '../db/outbox.ts';
-import { extractTenantId, createOAuthJwtToken } from '../tenant/tenant.ts';
+import { extractTenantId, createOAuthJwtToken, deriveCanonicalTenantId } from '../tenant/tenant.ts';
 import { buildWatchIcsFeed, buildWatchCalendarLinks } from '../calendar/ics.ts';
 import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
@@ -647,17 +647,54 @@ export function createAppServer(): http.Server {
       if (pathname === '/api/overview' && req.method === 'GET') {
         const { tenantId, userEmail, isExplicitTenant, authSource } = extractTenantId(req.headers, parsedUrl.searchParams);
 
+        let effectiveEmail = userEmail;
+        let effectiveTenantId = tenantId;
+
+        // If an explicit tenant is present (e.g. session token/cookie), resolve if an email is bound to it
+        if (!effectiveEmail && isExplicitTenant) {
+          const saved = notificationService.getSavedDefaultEmail(tenantId);
+          if (saved && !isDisallowedAmbientEmail(saved)) {
+            effectiveEmail = saved;
+          } else {
+            const rawTenantWatches = watchService.listWatches('all', tenantId);
+            const watchWithEmail = rawTenantWatches.find(
+              (w) => w.recipient_email && !isDisallowedAmbientEmail(w.recipient_email)
+            );
+            if (watchWithEmail?.recipient_email) {
+              effectiveEmail = watchWithEmail.recipient_email;
+            }
+          }
+        }
+
+        // Reconcile and unify all watches across disjoint ephemeral sessions if email is known
+        if (effectiveEmail) {
+          const { canonicalTenantId, targetTenantId } = watchService.reconcileTenantIdentity(effectiveEmail, tenantId);
+          if (!isExplicitTenant) {
+            effectiveTenantId = canonicalTenantId;
+          } else {
+            effectiveTenantId = targetTenantId;
+          }
+        }
+
         // Multi-tenant privacy invariant: anonymous visitors receive an empty vault with zero private DB records
-        const watches = isExplicitTenant ? watchService.listWatches('all', tenantId) : [];
-        const notifications = isExplicitTenant ? notificationService.listNotifications(40, tenantId) : [];
-        const checkLogs = isExplicitTenant ? watchService.listCheckLogs(undefined, 25, tenantId) : [];
-        const channels = isExplicitTenant ? notificationService.getChannelConfigs(tenantId) : [];
+        const watches = isExplicitTenant || effectiveEmail
+          ? watchService.listWatches('all', effectiveTenantId, effectiveEmail)
+          : [];
+        const notifications = isExplicitTenant || effectiveEmail
+          ? notificationService.listNotifications(40, effectiveTenantId)
+          : [];
+        const checkLogs = isExplicitTenant || effectiveEmail
+          ? watchService.listCheckLogs(undefined, 25, effectiveTenantId)
+          : [];
+        const channels = isExplicitTenant || effectiveEmail
+          ? notificationService.getChannelConfigs(effectiveTenantId)
+          : [];
 
         sendJson(res, 200, {
-          authenticated: isExplicitTenant,
+          authenticated: isExplicitTenant || Boolean(effectiveEmail),
           auth_source: authSource,
-          tenant_id: isExplicitTenant ? tenantId : null,
-          user_email: userEmail,
+          tenant_id: isExplicitTenant ? tenantId : (effectiveEmail ? effectiveTenantId : null),
+          user_email: effectiveEmail,
           infrastructure: cloudDatabaseSync.getStatus(),
           watches,
           notifications,
@@ -685,11 +722,18 @@ export function createAppServer(): http.Server {
       // 4c. Client Session Management (Login/Logout for Web Vault)
       if (pathname === '/api/auth/session' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const requestedTenant = typeof body.tenant_id === 'string' && body.tenant_id.trim()
+        let requestedTenant = typeof body.tenant_id === 'string' && body.tenant_id.trim()
           ? body.tenant_id.trim()
-          : (typeof body.email === 'string' && body.email.includes('@')
-              ? 'tenant_' + crypto.createHash('sha256').update(body.email.trim()).digest('hex').slice(0, 16)
-              : null);
+          : null;
+        const email = typeof body.email === 'string' && body.email.includes('@') && !isDisallowedAmbientEmail(body.email.trim())
+          ? body.email.trim().toLowerCase()
+          : null;
+
+        if (email) {
+          const { canonicalTenantId } = watchService.reconcileTenantIdentity(email, requestedTenant || undefined);
+          requestedTenant = canonicalTenantId;
+        }
+
         if (!requestedTenant) {
           sendJson(res, 400, { error: 'Invalid tenant_id or email provided' });
           return;
@@ -699,7 +743,7 @@ export function createAppServer(): http.Server {
           'Set-Cookie': `prm_session=${encodeURIComponent(requestedTenant)}; Path=/; SameSite=Lax; Max-Age=31536000`,
           'Access-Control-Allow-Origin': '*'
         });
-        res.end(JSON.stringify({ success: true, tenant_id: requestedTenant }));
+        res.end(JSON.stringify({ success: true, tenant_id: requestedTenant, user_email: email }));
         return;
       }
 
@@ -715,9 +759,23 @@ export function createAppServer(): http.Server {
 
       // 5. Watches CRUD + Resolution Engine triggers
       if (pathname === '/api/watches' && req.method === 'GET') {
-        const { tenantId, isExplicitTenant } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const { tenantId, userEmail, isExplicitTenant } = extractTenantId(req.headers, parsedUrl.searchParams);
         const statusFilter = parsedUrl.searchParams.get('status') || 'all';
-        const watches = isExplicitTenant ? watchService.listWatches(statusFilter, tenantId) : [];
+        let effectiveEmail = userEmail;
+        let effectiveTenantId = tenantId;
+        if (!effectiveEmail && isExplicitTenant) {
+          const saved = notificationService.getSavedDefaultEmail(tenantId);
+          if (saved && !isDisallowedAmbientEmail(saved)) {
+            effectiveEmail = saved;
+          }
+        }
+        if (effectiveEmail) {
+          const { canonicalTenantId } = watchService.reconcileTenantIdentity(effectiveEmail, tenantId);
+          effectiveTenantId = canonicalTenantId;
+        }
+        const watches = isExplicitTenant || effectiveEmail
+          ? watchService.listWatches(statusFilter, effectiveTenantId, effectiveEmail)
+          : [];
         sendJson(res, 200, { watches });
         return;
       }

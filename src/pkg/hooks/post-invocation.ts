@@ -83,8 +83,14 @@ export async function evaluateTranscriptTurnForHook(
   }
 
   const userText = (steps[lastUserIdx].content || '').trim();
-  // Skip slash commands or plugin-authoring meta prompts
-  if (userText.startsWith('/plugin') || userText.includes('<USER_REQUEST>\n/plugin')) {
+  // Skip slash commands or plugin-authoring / system-refactoring meta prompts
+  const isMetaPrompt =
+    userText.startsWith('/plugin') ||
+    userText.includes('<USER_REQUEST>\n/plugin') ||
+    /\b(?:What a Top Professional Would Do|Rewritten Prompt|Refactor PulseRemind|I want a deeper version of this task|say what a top professional)\b/i.test(
+      userText
+    );
+  if (isMetaPrompt) {
     return { hookAction: 'noop' };
   }
 

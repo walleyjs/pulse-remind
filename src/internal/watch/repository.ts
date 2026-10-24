@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { db, runInTransaction } from '../../pkg/db/sqlite.ts';
 import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
 import { enqueueOutbox } from '../../pkg/db/outbox.ts';
-import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
+import { DEFAULT_TENANT_ID, deriveCanonicalTenantId } from '../../pkg/tenant/tenant.ts';
 import { normalizeCanonicalUrl } from '../resolution/validator.ts';
 import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
 import { notificationRepository } from '../notification/repository.ts';
@@ -256,14 +256,27 @@ export class WatchRepository {
     return rows.map(mapWatchRow);
   }
 
-  list(statusFilter?: string, tenantId?: string): WatchRecord[] {
+  list(statusFilter?: string, tenantId?: string, userEmail?: string | null): WatchRecord[] {
     let sql = 'SELECT * FROM watches';
     const conditions: string[] = [];
     const params: unknown[] = [];
 
+    const cleanEmail =
+      userEmail && userEmail.includes('@') && !isDisallowedAmbientEmail(userEmail)
+        ? userEmail.trim().toLowerCase()
+        : null;
+
     if (tenantId && tenantId !== 'all') {
-      conditions.push('tenant_id = ?');
-      params.push(tenantId);
+      if (cleanEmail) {
+        conditions.push('(tenant_id = ? OR recipient_email = ?)');
+        params.push(tenantId, cleanEmail);
+      } else {
+        conditions.push('tenant_id = ?');
+        params.push(tenantId);
+      }
+    } else if (cleanEmail) {
+      conditions.push('recipient_email = ?');
+      params.push(cleanEmail);
     }
 
     if (statusFilter && statusFilter !== 'all') {
@@ -278,6 +291,46 @@ export class WatchRepository {
 
     const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(mapWatchRow);
+  }
+
+  reconcileTenantIdentity(
+    email: string,
+    ephemeralTenantId?: string
+  ): { canonicalTenantId: string; targetTenantId: string; migratedCount: number } {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail.includes('@') || isDisallowedAmbientEmail(cleanEmail)) {
+      const fallback = ephemeralTenantId || DEFAULT_TENANT_ID;
+      return { canonicalTenantId: fallback, targetTenantId: fallback, migratedCount: 0 };
+    }
+
+    const canonicalTenantId = deriveCanonicalTenantId(cleanEmail);
+    const targetTenantId =
+      ephemeralTenantId && ephemeralTenantId !== DEFAULT_TENANT_ID
+        ? ephemeralTenantId
+        : canonicalTenantId;
+
+    return runInTransaction(() => {
+      // Migrate any watches belonging to this user's email into the target tenant
+      const res = db
+        .prepare(
+          `
+          UPDATE watches
+          SET tenant_id = ?
+          WHERE recipient_email = ? AND tenant_id != ?
+        `
+        )
+        .run(targetTenantId, cleanEmail, targetTenantId);
+
+      const migratedCount = res.changes;
+
+      notificationRepository.setSavedDefaultEmail(cleanEmail, targetTenantId);
+      notificationRepository.setSavedDefaultEmail(cleanEmail, canonicalTenantId);
+      if (targetTenantId === DEFAULT_TENANT_ID || !ephemeralTenantId || ephemeralTenantId === DEFAULT_TENANT_ID) {
+        notificationRepository.setSavedDefaultEmail(cleanEmail, DEFAULT_TENANT_ID);
+      }
+
+      return { canonicalTenantId, targetTenantId, migratedCount };
+    });
   }
 
   getReadyForResolution(nowUnix = Math.floor(Date.now() / 1000)): WatchRecord[] {
@@ -325,9 +378,10 @@ export class WatchRepository {
     const watch = this.findBySubscriberToken(token, tenantId);
     if (!watch) return null;
 
-    const effectiveTenantId = watch.tenant_id;
+    let targetTenantId = watch.tenant_id;
     if (params.recipient_email && params.recipient_email.trim()) {
-      notificationRepository.setSavedDefaultEmail(params.recipient_email.trim(), effectiveTenantId);
+      const { targetTenantId: reconciledTenantId } = this.reconcileTenantIdentity(params.recipient_email.trim(), watch.tenant_id);
+      targetTenantId = reconciledTenantId;
     }
 
     const nextChannels =
@@ -351,14 +405,15 @@ export class WatchRepository {
         SET recipient_email = ?,
             notify_channels = ?,
             resolution_config = ?,
+            tenant_id = ?,
             version = ?
-        WHERE id = ? AND tenant_id = ?
-      `).run(nextEmail, JSON.stringify(nextChannels), JSON.stringify(nextResConfig), nextVersion, watch.id, effectiveTenantId);
+        WHERE id = ?
+      `).run(nextEmail, JSON.stringify(nextChannels), JSON.stringify(nextResConfig), targetTenantId, nextVersion, watch.id);
 
-      const updated = this.getById(watch.id, effectiveTenantId);
+      const updated = this.getById(watch.id, targetTenantId);
       if (updated) {
         enqueueOutbox({
-          tenant_id: effectiveTenantId,
+          tenant_id: targetTenantId,
           event_type: 'watch_claimed',
           entity_table: 'watches',
           entity_id: watch.id,
@@ -381,8 +436,15 @@ export class WatchRepository {
     const cleanEmail = params.recipient_email.trim();
     const effectiveTenantId = params.tenant_id || DEFAULT_TENANT_ID;
 
+    // Atomically coalesce identity across disjoint sessions
+    const { canonicalTenantId, targetTenantId } = this.reconcileTenantIdentity(cleanEmail, effectiveTenantId);
+
     if (params.save_as_default !== false && cleanEmail) {
-      notificationRepository.setSavedDefaultEmail(cleanEmail, effectiveTenantId);
+      notificationRepository.setSavedDefaultEmail(cleanEmail, canonicalTenantId);
+      notificationRepository.setSavedDefaultEmail(cleanEmail, targetTenantId);
+      if (effectiveTenantId === DEFAULT_TENANT_ID || targetTenantId === DEFAULT_TENANT_ID) {
+        notificationRepository.setSavedDefaultEmail(cleanEmail, DEFAULT_TENANT_ID);
+      }
     }
 
     const targetIds = new Set<string>();
@@ -390,8 +452,8 @@ export class WatchRepository {
       targetIds.add(params.watch_id);
     }
 
-    // Bind any currently unbound watches for this tenant
-    const allWatches = this.list('all', effectiveTenantId);
+    // Bind any currently unbound watches for this tenant or canonical identity
+    const allWatches = this.list('all', targetTenantId, cleanEmail);
     for (const w of allWatches) {
       if (!w.recipient_email || isDisallowedAmbientEmail(w.recipient_email)) {
         targetIds.add(w.id);
@@ -403,7 +465,7 @@ export class WatchRepository {
 
     const updatedWatches: WatchRecord[] = [];
     for (const id of targetIds) {
-      const watch = this.getById(id, effectiveTenantId);
+      const watch = this.getById(id, targetTenantId) || this.getById(id, canonicalTenantId) || this.getById(id, effectiveTenantId);
       if (!watch) continue;
       const mergedChannels = Array.from(
         new Set<NotificationChannelType>([
@@ -428,15 +490,16 @@ export class WatchRepository {
           SET recipient_email = ?,
               notify_channels = ?,
               resolution_config = ?,
+              tenant_id = ?,
               version = ?
-          WHERE id = ? AND tenant_id = ?
-        `).run(cleanEmail, JSON.stringify(mergedChannels), JSON.stringify(nextResConfig), nextVersion, id, effectiveTenantId);
+          WHERE id = ?
+        `).run(cleanEmail, JSON.stringify(mergedChannels), JSON.stringify(nextResConfig), targetTenantId, nextVersion, id);
 
-        const updated = this.getById(id, effectiveTenantId);
+        const updated = this.getById(id, targetTenantId);
         if (updated) {
           updatedWatches.push(updated);
           enqueueOutbox({
-            tenant_id: effectiveTenantId,
+            tenant_id: targetTenantId,
             event_type: 'watch_updated',
             entity_table: 'watches',
             entity_id: id,

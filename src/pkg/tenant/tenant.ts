@@ -1,7 +1,13 @@
 import crypto from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 
 export const DEFAULT_TENANT_ID = 'tenant_default';
+
+export function deriveCanonicalTenantId(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  return 'tenant_' + crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+}
 
 /**
  * Encodes an authenticated token as a standard JWT Bearer token with sub claim.
@@ -48,18 +54,26 @@ export function extractTenantId(
 
   // 1. Check explicit URL query param (?tenant_id=... or ?session=...)
   if (queryParams) {
+    const qEmail = queryParams.get('email');
+    if (qEmail && qEmail.includes('@') && !isDisallowedAmbientEmail(qEmail)) {
+      userEmail = qEmail.trim().toLowerCase();
+    }
     const qTenant = queryParams.get('tenant_id') || queryParams.get('session') || queryParams.get('tenant');
     if (qTenant && qTenant.trim()) {
       return {
         tenantId: sanitizeTenantId(qTenant.trim()),
-        userEmail: queryParams.get('email') || null,
+        userEmail,
         isExplicitTenant: true,
         authSource: 'query'
       };
     }
-    const qEmail = queryParams.get('email');
-    if (qEmail && qEmail.includes('@')) {
-      userEmail = qEmail.trim();
+    if (userEmail) {
+      return {
+        tenantId: deriveCanonicalTenantId(userEmail),
+        userEmail,
+        isExplicitTenant: true,
+        authSource: 'query'
+      };
     }
   }
 

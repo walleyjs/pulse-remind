@@ -35,8 +35,15 @@ export class WatchService {
     );
   }
 
-  listWatches(statusFilter?: string, tenantId?: string): WatchRecord[] {
-    return this.repo.list(statusFilter, tenantId);
+  listWatches(statusFilter?: string, tenantId?: string, userEmail?: string | null): WatchRecord[] {
+    return this.repo.list(statusFilter, tenantId, userEmail);
+  }
+
+  reconcileTenantIdentity(
+    email: string,
+    ephemeralTenantId?: string
+  ): { canonicalTenantId: string; targetTenantId: string; migratedCount: number } {
+    return this.repo.reconcileTenantIdentity(email, ephemeralTenantId);
   }
 
   getWatchById(id: string, tenantId?: string): WatchRecord | null {

@@ -32,7 +32,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_opportunity_watch',
     description:
-      'Creates a monitored watch or scheduled reminder for an upcoming event, ticket release, product launch, conference, registration window, or deadline.',
+      'Creates a monitored watch or scheduled reminder whenever an upcoming event, scholarship, fellowship, grant, conference, ticket drop, product launch, registration window, or application deadline is discussed, planned, or requested.',
     annotations: {
       title: 'Create Event Watch or Scheduled Reminder',
       readOnlyHint: false,
@@ -155,7 +155,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'extract_watches_from_chat',
     description:
-      'Extracts event entities, deadlines, and action checklists from conversation text and provisions corresponding reminder watches.',
+      'Extracts one or multiple event entities, scholarship deadlines, and action checklists from conversation text and provisions corresponding reminder watches in a single operation.',
     annotations: {
       title: 'Extract Event Watches From Chat',
       readOnlyHint: false,
