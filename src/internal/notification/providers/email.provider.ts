@@ -36,9 +36,10 @@ export class EmailProvider {
   }): Promise<EmailSendResult> {
     const resendApiKey = process.env.RESEND_API_KEY || '';
     const fromAddress =
-      params.fromEmail ||
       process.env.RESEND_FROM_EMAIL ||
-      'PulseRemind Alerts <onboarding@resend.dev>';
+      (params.fromEmail && !params.fromEmail.includes('pulseremind.ai')
+        ? params.fromEmail
+        : 'PulseRemind Alerts <onboarding@resend.dev>');
 
     if (!resendApiKey || params.to === 'student@university.edu') {
       return {

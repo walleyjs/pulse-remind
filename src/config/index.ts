@@ -1,26 +1,34 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 function loadDotEnvIfPresent(): void {
-  try {
-    const envPath = path.join(process.cwd(), '.env');
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx !== -1) {
-          const key = trimmed.slice(0, eqIdx).trim();
-          const val = trimmed.slice(eqIdx + 1).trim();
-          if (!process.env[key] && val) {
-            process.env[key] = val;
+  const candidatePaths = [
+    path.join(process.cwd(), '.env'),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env')
+  ];
+
+  for (const envPath of candidatePaths) {
+    try {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, 'utf-8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx !== -1) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            const val = trimmed.slice(eqIdx + 1).trim();
+            if (!process.env[key] && val) {
+              process.env[key] = val;
+            }
           }
         }
+        break;
       }
+    } catch {
+      // Ignore in read-only / custom environments
     }
-  } catch {
-    // Ignore in read-only / custom environments
   }
 }
 
