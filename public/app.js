@@ -1,3 +1,6 @@
+// PulseRemind / Cue — Minimalist Frontend Controller
+// Pure Vanilla JavaScript, zero external dependencies
+
 let currentFilter = 'all';
 let latestState = {
   authenticated: false,
@@ -18,11 +21,21 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function extractDomain(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
 function formatTime(iso) {
   if (!iso) return 'Never';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' (' + d.toLocaleDateString() + ')';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 function calculateCountdown(targetDateIso) {
@@ -30,7 +43,7 @@ function calculateCountdown(targetDateIso) {
   const target = new Date(targetDateIso).getTime();
   if (isNaN(target)) return null;
   const diffMs = target - Date.now();
-  if (diffMs <= 0) return { expired: true, text: 'Window Reached / Active' };
+  if (diffMs <= 0) return { expired: true, text: 'Trigger Window Active' };
 
   const totalSec = Math.floor(diffMs / 1000);
   const days = Math.floor(totalSec / 86400);
@@ -54,40 +67,40 @@ function calculateCountdown(targetDateIso) {
 
 function getTemporalPhaseBadge(watch) {
   if (watch.status === 'triggered_open') {
-    return '<span class="status-badge badge-live">🟢 LIVE NOW — Applications / Tickets Open</span>';
+    return '<span class="status-pill active"><span class="status-pill-dot"></span>Triggered Live</span>';
   }
   if (watch.status === 'expired_closed') {
-    return '<span class="status-badge badge-closed">🔴 Deadline Passed / Closed</span>';
+    return '<span class="status-pill hibernating"><span class="status-pill-dot"></span>Closed</span>';
   }
 
   const target = watch.window_start_date || watch.detected_deadline;
   if (!target) {
-    return '<span class="status-badge badge-sampling">🔵 Active Sampling</span>';
+    return '<span class="status-pill active"><span class="status-pill-dot"></span>Sampling</span>';
   }
 
   const targetMs = new Date(target).getTime();
   const diffDays = (targetMs - Date.now()) / (1000 * 86400);
 
   if (diffDays > 21) {
-    return '<span class="status-badge badge-hibernating">🟣 HIBERNATING (Check ~7d)</span>';
+    return '<span class="status-pill hibernating"><span class="status-pill-dot"></span>Hibernating</span>';
   }
   if (diffDays > 3) {
-    return '<span class="status-badge badge-approaching">🔵 APPROACHING (2h - 24h)</span>';
+    return '<span class="status-pill approaching"><span class="status-pill-dot"></span>Approaching</span>';
   }
-  return '<span class="status-badge badge-sampling">⚡ BURST SAMPLING (Minutes)</span>';
+  return '<span class="status-pill active"><span class="status-pill-dot"></span>Burst Monitoring</span>';
 }
 
-function getCategoryIcon(cat) {
+function getCategoryLabel(cat) {
   switch (cat) {
-    case 'tickets': return '🎟️ Tickets';
-    case 'product_launch': return '🚀 Product Launch';
-    case 'regulatory_deadline': return '⚖️ Regulatory / SEC';
-    case 'visa_slot': return '✈️ Visa Slot';
-    case 'conference': return '🎤 Conference';
-    case 'hackathon': return '💻 Hackathon';
-    case 'grant': return '💰 Grant';
-    case 'calendar_reminder': return '🗓️ Calendar';
-    default: return '🎓 Opportunity';
+    case 'tickets': return 'Tickets & Passes';
+    case 'product_launch': return 'Product Drop';
+    case 'regulatory_deadline': return 'Regulatory';
+    case 'visa_slot': return 'Visa Appointment';
+    case 'conference': return 'Conference';
+    case 'hackathon': return 'Hackathon';
+    case 'grant': return 'Grant';
+    case 'calendar_reminder': return 'Calendar Event';
+    default: return 'Opportunity';
   }
 }
 
@@ -98,7 +111,7 @@ async function fetchOverview() {
     updateSessionIndicator();
     renderAll();
   } catch (err) {
-    console.error('Failed to fetch personal overview', err);
+    console.error('Failed to fetch overview state', err);
   }
 }
 
@@ -108,14 +121,19 @@ function updateSessionIndicator() {
   const input = document.getElementById('currentTenantInput');
 
   if (latestState.authenticated && latestState.tenant_id) {
-    const shortId = latestState.tenant_id.replace(/^tenant_/, '').slice(0, 10);
-    if (label) label.textContent = `Vault: ${shortId}`;
+    const email = latestState.user_email;
+    if (email) {
+      if (label) label.textContent = email;
+    } else {
+      const shortId = latestState.tenant_id.replace(/^tenant_/, '').slice(0, 8);
+      if (label) label.textContent = `Vault ${shortId}`;
+    }
     if (dot) dot.style.background = '#10b981';
-    if (input) input.value = latestState.tenant_id + (latestState.user_email ? ` (${latestState.user_email})` : '');
+    if (input) input.value = latestState.tenant_id + (email ? ` (${email})` : '');
   } else {
     if (label) label.textContent = 'Guest Vault';
-    if (dot) dot.style.background = '#94a3b8';
-    if (input) input.value = 'Guest (Anonymous session)';
+    if (dot) dot.style.background = '#71717a';
+    if (input) input.value = 'Guest (Anonymous Ephemeral Session)';
   }
 }
 
@@ -133,32 +151,23 @@ function renderWatches() {
   const allWatches = latestState.watches || [];
   if (countBadge) countBadge.textContent = String(allWatches.length);
 
-  // If user has NO watches in this session: render pristine Zero-State showcase
+  // Pristine Minimalist Empty State
   if (allWatches.length === 0) {
     container.innerHTML = `
-      <div class="zero-state-showcase">
-        <div style="font-size:36px;margin-bottom:8px;">🎯</div>
-        <h3 style="margin:0 0 6px;font-size:17px;">Your Private Watch Vault is Empty</h3>
-        <p class="muted" style="max-width:540px;margin:0 auto 18px;">
-          PulseRemind captures events directly from AI chats. Once you or your LLM schedules an event or reminder, it will appear here with live countdowns and checklists.
-        </p>
-
-        <div class="showcase-grid">
-          <div class="showcase-card">
-            <h4>🎟️ Glastonbury 2027 Coach + Tickets</h4>
-            <p>Target Window: October 2026. Monitors ticket sale hydration state with sub-minute bursts before drop.</p>
-          </div>
-          <div class="showcase-card">
-            <h4>🚀 PlayStation 6 Pre-Order Drops</h4>
-            <p>Monitors Schema.org InStock vs SoldOut with ETag short-circuiting and immediate Web Push.</p>
-          </div>
-          <div class="showcase-card">
-            <h4>⚖️ SEC Form 10-K Annual Filing</h4>
-            <p>AoE (UTC-12) deadline resolution with dual VALARM calendar sync and multi-probe anti-flap verification.</p>
-          </div>
+      <div class="zero-state-view">
+        <div class="zero-state-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
         </div>
-
-        <button type="button" class="btn btn-primary" id="zeroStateCreateBtn">+ Create First Watch</button>
+        <h3 class="zero-state-title">No Monitored Events</h3>
+        <p class="zero-state-desc">
+          When an AI assistant schedules a reminder or monitors an upcoming release, your active watches and live countdowns will appear here.
+        </p>
+        <button type="button" class="btn btn-secondary btn-compact" id="zeroStateCreateBtn">
+          + New Watch
+        </button>
       </div>
     `;
 
@@ -186,18 +195,19 @@ function renderWatches() {
 
   container.innerHTML = filtered
     .map((w) => {
-      const catLabel = getCategoryIcon(w.category);
+      const catLabel = getCategoryLabel(w.category);
       const phaseBadge = getTemporalPhaseBadge(w);
       const targetDate = w.window_start_date || w.detected_deadline;
       const countdown = calculateCountdown(targetDate);
+      const domain = extractDomain(w.target_url);
 
       let countdownHtml = '';
       if (countdown) {
         if (countdown.expired) {
-          countdownHtml = `<span class="countdown-meter live">🟢 ${escapeHtml(countdown.text)}</span>`;
+          countdownHtml = `<span class="countdown-clock live">${escapeHtml(countdown.text)}</span>`;
         } else {
           const isUrgent = countdown.days <= 3;
-          countdownHtml = `<span class="countdown-meter ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">⏳ ${escapeHtml(countdown.text)}</span>`;
+          countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
         }
       }
 
@@ -213,13 +223,12 @@ function renderWatches() {
       let checklistHtml = '';
       if (checklistItems.length > 0) {
         checklistHtml = `
-          <div class="watch-checklist">
-            <div class="checklist-title">📋 AI Action Checklist</div>
+          <div class="checklist-container">
             ${checklistItems
               .map((item) => {
                 const isChecked = completedList.includes(item);
                 return `
-                <label class="checklist-checkbox-label ${isChecked ? 'is-done' : ''}">
+                <label class="checklist-label ${isChecked ? 'is-done' : ''}">
                   <input type="checkbox" data-watch-id="${w.id}" data-item="${escapeHtml(item)}" ${isChecked ? 'checked' : ''} />
                   <span>${escapeHtml(item)}</span>
                 </label>
@@ -231,26 +240,32 @@ function renderWatches() {
       }
 
       // Calendar Links
-      const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent('🔔 ' + w.title)}&dates=${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T090000Z/${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T100000Z&details=${encodeURIComponent(w.chat_context || w.title)}`;
+      const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(w.title)}&dates=${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T090000Z/${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T100000Z&details=${encodeURIComponent(w.chat_context || w.title)}`;
       const icsDownloadUrl = `/api/watches/${encodeURIComponent(w.id)}/calendar.ics`;
 
+      const isTriggered = w.status === 'triggered_open';
+
       return `
-        <div class="watch-card" data-watch-id="${w.id}">
-          <div class="watch-card-header">
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
-                <span class="cat-pill" style="font-size:11px;">${catLabel}</span>
+        <article class="watch-row ${isTriggered ? 'is-triggered' : ''}" data-watch-id="${w.id}">
+          <div class="watch-row-header">
+            <div style="flex: 1; min-width: 0;">
+              <div class="watch-meta-strip">
                 ${phaseBadge}
+                <span class="category-tag">${escapeHtml(catLabel)}</span>
+                ${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}
                 ${countdownHtml}
               </div>
               <h3 class="watch-title">${escapeHtml(w.title)}</h3>
-              <p class="watch-window-label">Window: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Upcoming')}</strong> ${w.detected_deadline ? `&bull; Deadline: <strong style="color:#f59e0b;">${escapeHtml(w.detected_deadline)}</strong>` : ''}</p>
+              <p class="watch-window-summary">
+                Target: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Unspecified')}</strong>
+                ${w.detected_deadline ? ` · Deadline: <strong>${escapeHtml(w.detected_deadline)}</strong>` : ''}
+              </p>
             </div>
-            <div class="watch-card-menu">
-              <button type="button" class="btn btn-sm btn-secondary btn-check-now" data-watch-id="${w.id}" title="Trigger check immediately">
-                Check Now
+            <div class="watch-row-actions">
+              <button type="button" class="btn btn-secondary btn-compact btn-check-now" data-watch-id="${w.id}" title="Run immediate verification check">
+                Check
               </button>
-              <button type="button" class="btn btn-sm btn-danger btn-delete-watch" data-watch-id="${w.id}" title="Delete watch">
+              <button type="button" class="btn btn-danger btn-compact btn-delete-watch" data-watch-id="${w.id}" title="Delete watch" aria-label="Delete watch">
                 &times;
               </button>
             </div>
@@ -258,17 +273,37 @@ function renderWatches() {
 
           ${checklistHtml}
 
-          <div class="cal-btn-group">
-            <a class="btn-cal-small" href="${googleCalUrl}" target="_blank">🗓️ Google Calendar</a>
-            <a class="btn-cal-small" href="${icsDownloadUrl}" download="${w.id}.ics">📥 Apple / Outlook (.ics)</a>
-            ${w.target_url ? `<a class="btn-cal-small" href="${escapeHtml(w.target_url)}" target="_blank" style="color:#38bdf8;">🔗 Official Site &nearr;</a>` : ''}
+          <div class="watch-bottom-strip">
+            <div class="action-links-group">
+              <a class="link-btn" href="${googleCalUrl}" target="_blank" rel="noopener">Add to Google Cal</a>
+              <a class="link-btn" href="${icsDownloadUrl}" download="${w.id}.ics">Download .ics</a>
+              ${w.target_url ? `<a class="link-btn primary-link" href="${escapeHtml(w.target_url)}" target="_blank" rel="noopener">Visit Site ↗</a>` : ''}
+              <button type="button" class="btn-text btn-toggle-drawer" data-watch-id="${w.id}">Details ▾</button>
+            </div>
+            <span class="domain-tag">Last checked: ${formatTime(w.last_checked_at)}</span>
           </div>
 
-          <div class="watch-card-footer" style="margin-top:10px;">
-            <span class="footer-meta">Last checked: ${formatTime(w.last_checked_at)}</span>
-            <span class="footer-meta">Alerts: ${(w.notify_channels || []).join(', ')}</span>
+          <div class="inspection-drawer hidden" id="drawer-${w.id}">
+            <div class="inspection-grid">
+              <div class="inspection-item">
+                <span class="inspection-key">Watch ID</span>
+                <span class="inspection-value">${escapeHtml(w.id)}</span>
+              </div>
+              <div class="inspection-item">
+                <span class="inspection-key">ETag / State Hash</span>
+                <span class="inspection-value">${escapeHtml(w.resolution_config?.etag || 'None / Polling')}</span>
+              </div>
+              <div class="inspection-item">
+                <span class="inspection-key">Channels</span>
+                <span class="inspection-value">${escapeHtml((w.notify_channels || []).join(', ') || 'In-App')}</span>
+              </div>
+              <div class="inspection-item">
+                <span class="inspection-key">Claim URL</span>
+                <span class="inspection-value"><a href="/claim?token=${escapeHtml(w.subscriber_token || '')}" class="endpoint-link" target="_blank">Direct Claim Link ↗</a></span>
+              </div>
+            </div>
           </div>
-        </div>
+        </article>
       `;
     })
     .join('');
@@ -279,7 +314,7 @@ function renderWatches() {
       const watchId = chk.getAttribute('data-watch-id');
       const itemText = chk.getAttribute('data-item');
       const completed = chk.checked;
-      const label = chk.closest('.checklist-checkbox-label');
+      const label = chk.closest('.checklist-label');
       if (label) {
         if (completed) label.classList.add('is-done');
         else label.classList.remove('is-done');
@@ -297,6 +332,18 @@ function renderWatches() {
     });
   });
 
+  // Attach drawer toggle handlers
+  container.querySelectorAll('.btn-toggle-drawer').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-watch-id');
+      const drawer = document.getElementById(`drawer-${id}`);
+      if (drawer) {
+        const isHidden = drawer.classList.toggle('hidden');
+        btn.textContent = isHidden ? 'Details ▾' : 'Hide Details ▴';
+      }
+    });
+  });
+
   // Attach Check Now and Delete handlers
   container.querySelectorAll('.btn-check-now').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -306,7 +353,7 @@ function renderWatches() {
         await fetch(`/api/watches/${encodeURIComponent(id)}/check`, { method: 'POST' });
         await fetchOverview();
       } catch {
-        alert('Check failed');
+        btn.textContent = 'Check';
       }
     });
   });
@@ -332,7 +379,7 @@ function renderNotifications() {
 
   if (badge) {
     if (unread > 0) {
-      badge.textContent = `${unread} new`;
+      badge.textContent = `${unread}`;
       badge.classList.remove('hidden');
     } else {
       badge.classList.add('hidden');
@@ -340,29 +387,27 @@ function renderNotifications() {
   }
 
   if (list.length === 0) {
-    container.innerHTML = '<p class="empty-state">No alerts in your private feed yet.</p>';
+    container.innerHTML = '<p class="empty-state">No alerts or checks dispatched yet.</p>';
     return;
   }
 
   container.innerHTML = list
     .slice(0, 15)
     .map((n) => {
-      const chipClass = n.delivery_status === 'opened' ? 'opened' : (n.delivery_status === 'delivered' ? 'delivered' : 'simulated');
       return `
-      <div class="notification-item ${n.is_read ? '' : 'unread'}" data-notif-id="${n.id}">
-        <div class="notif-header">
-          <span class="delivery-chip ${chipClass}">${escapeHtml(n.delivery_status || 'delivered')}</span>
-          <span class="notif-channel">${escapeHtml(n.channel)}</span>
-          <span class="notif-time">${formatTime(n.created_at)}</span>
+      <div class="activity-item ${n.is_read ? '' : 'unread'}" data-notif-id="${n.id}">
+        <div class="activity-header">
+          <span class="activity-channel">${escapeHtml(n.channel)}</span>
+          <span class="activity-time">${formatTime(n.created_at)}</span>
         </div>
-        <div class="notif-title">${escapeHtml(n.subject)}</div>
-        <div class="notif-msg">${escapeHtml(n.message)}</div>
+        <div class="activity-subject">${escapeHtml(n.subject)}</div>
+        <div class="activity-body">${escapeHtml(n.message)}</div>
       </div>
     `;
     })
     .join('');
 
-  container.querySelectorAll('.notification-item.unread').forEach((item) => {
+  container.querySelectorAll('.activity-item.unread').forEach((item) => {
     item.addEventListener('click', async () => {
       const id = item.getAttribute('data-notif-id');
       await fetch(`/api/notifications/${encodeURIComponent(id)}/open`, { method: 'POST' });
@@ -385,18 +430,18 @@ function renderChannels() {
     .map((ch) => {
       const isEnabled = Boolean(ch.enabled);
       let desc = '';
-      if (ch.channel === 'email') desc = ch.config?.default_recipient ? `Default: ${escapeHtml(ch.config.default_recipient)}` : 'Recipient email not set';
-      else if (ch.channel === 'in_app') desc = 'Real-time in-browser dashboard stream';
-      else if (ch.channel === 'web_push') desc = 'Browser Push Notifications (VAPID ES256)';
-      else desc = ch.config?.webhook_url ? 'Webhook connected' : 'Webhook URL not configured';
+      if (ch.channel === 'email') desc = ch.config?.default_recipient ? escapeHtml(ch.config.default_recipient) : 'Unbound — set via chat or session';
+      else if (ch.channel === 'in_app') desc = 'In-browser feed & live state';
+      else if (ch.channel === 'web_push') desc = 'Standard W3C Web Push';
+      else desc = ch.config?.webhook_url ? 'Webhook connected' : 'Not configured';
 
       return `
-      <div class="channel-row">
-        <div>
-          <strong style="text-transform:capitalize;font-size:13px;">${escapeHtml(ch.channel.replace('_', ' '))}</strong>
-          <div style="font-size:11.5px;color:var(--text-muted);">${desc}</div>
+      <div class="channel-card">
+        <div class="channel-info">
+          <strong>${escapeHtml(ch.channel.replace('_', ' '))}</strong>
+          <span>${desc}</span>
         </div>
-        <label class="switch">
+        <label class="switch" aria-label="Toggle ${escapeHtml(ch.channel)}">
           <input type="checkbox" data-channel="${ch.channel}" ${isEnabled ? 'checked' : ''} />
           <span class="slider"></span>
         </label>
@@ -422,15 +467,15 @@ function renderChannels() {
 // Living countdown clock updater (ticks every 1000ms)
 function startLivingTimers() {
   setInterval(() => {
-    document.querySelectorAll('.countdown-meter[data-target-date]').forEach((el) => {
+    document.querySelectorAll('.countdown-clock[data-target-date]').forEach((el) => {
       const dateIso = el.getAttribute('data-target-date');
       const cd = calculateCountdown(dateIso);
       if (cd) {
         if (cd.expired) {
-          el.className = 'countdown-meter live';
-          el.textContent = '🟢 Portal Open!';
+          el.className = 'countdown-clock live';
+          el.textContent = 'Trigger Window Active';
         } else {
-          el.textContent = `⏳ ${cd.text}`;
+          el.textContent = cd.text;
           if (cd.days <= 3) el.classList.add('urgent');
         }
       }
@@ -439,10 +484,14 @@ function startLivingTimers() {
 }
 
 function setupFilterTabs() {
-  document.querySelectorAll('.filter-tab').forEach((tab) => {
+  document.querySelectorAll('.segment-btn').forEach((tab) => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.filter-tab').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.segment-btn').forEach((t) => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
       tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
       currentFilter = tab.getAttribute('data-status') || 'all';
       renderWatches();
     });
@@ -450,6 +499,23 @@ function setupFilterTabs() {
 }
 
 function setupModals() {
+  // Light dismiss fallback for all dialogs (modern web guidance)
+  document.querySelectorAll('dialog').forEach((dialog) => {
+    if (!('closedBy' in HTMLDialogElement.prototype)) {
+      dialog.addEventListener('click', (event) => {
+        if (event.target !== dialog) return;
+        const rect = dialog.getBoundingClientRect();
+        const isInside = (
+          rect.top <= event.clientY &&
+          event.clientY <= rect.top + rect.height &&
+          rect.left <= event.clientX &&
+          event.clientX <= rect.left + rect.width
+        );
+        if (!isInside) dialog.close();
+      });
+    }
+  });
+
   // Create Watch Modal
   const createDialog = document.getElementById('createWatchDialog');
   document.getElementById('openCreateModalBtn')?.addEventListener('click', () => createDialog?.showModal());
@@ -482,7 +548,6 @@ function setupModals() {
   // MCP Config Modal
   const mcpDialog = document.getElementById('mcpConfigDialog');
   document.getElementById('openMcpModalBtn')?.addEventListener('click', () => {
-    const origin = window.location.origin;
     const snippet = {
       mcpServers: {
         pulseremind: {
@@ -530,7 +595,7 @@ function setupModals() {
     }
     const perm = await Notification.requestPermission();
     if (perm === 'granted') {
-      alert('Browser Push Notifications enabled!');
+      alert('Browser Push Notifications enabled');
     }
   });
 

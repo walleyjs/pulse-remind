@@ -10,135 +10,92 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <!-- Navigation Topbar -->
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <img src="/favicon.svg" alt="PulseRemind Logo" width="40" height="40" style="border-radius: 10px;" />
-        <div>
-          <div class="brand-title">PulseRemind <span class="brand-tag">Universal Event Engine</span></div>
-          <div class="brand-subtitle">AI Chat Captured Watches &bull; Adaptive Hazard-Rate Resolution &bull; Multi-Channel Alerts</div>
+        <div class="brand-logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">PulseRemind</span>
+          <span class="brand-version"><span class="engine-pulse"></span> Engine Active</span>
         </div>
       </div>
+
       <div class="topbar-actions">
-        <button type="button" class="btn btn-secondary" id="openMcpModalBtn">
-          🔌 Connect AI (MCP)
-        </button>
-        <a href="/dev/sandbox" class="btn btn-secondary" title="Isolated developer mock portals & transcript playground">
-          🔬 Dev Sandbox &nearr;
+        <a href="/dev/sandbox" class="btn btn-secondary btn-compact" title="Developer simulation harness">
+          Sandbox ↗
         </a>
-        <button type="button" class="btn btn-secondary" id="openSessionBtn">
-          <span id="sessionStatusIndicator" class="session-dot"></span>
-          <span id="sessionLabel">Private Vault</span>
+        <button type="button" class="btn btn-secondary btn-compact" id="openMcpModalBtn">
+          Connect AI
         </button>
-        <button type="button" class="btn btn-primary" id="openCreateModalBtn">
+        <button type="button" class="btn btn-secondary btn-compact" id="openSessionBtn">
+          <span id="sessionStatusIndicator" class="session-dot"></span>
+          <span id="sessionLabel">Session Vault</span>
+        </button>
+        <button type="button" class="btn btn-primary btn-compact" id="openCreateModalBtn">
           + New Watch
         </button>
       </div>
     </div>
   </header>
 
+  <!-- Main Application Workspace -->
   <main class="container">
-    <!-- Public Product Showcase Hero -->
-    <section class="hero-section" aria-labelledby="heroTitle">
-      <div class="hero-content">
-        <span class="eyebrow">⚡ Zero-Signup Universal Temporal Alerting</span>
-        <h1 id="heroTitle">Never Miss a Drop, Portal Window, or Regulatory Deadline</h1>
-        <p class="hero-desc">
-          PulseRemind captures future-dated events mentioned casually in AI chats (ChatGPT, Claude, Cursor, Antigravity). It monitors target websites with sub-minute hazard-rate bursts and alerts you across Email, Web Push, Slack, Discord, and RFC 5545 calendar alarms.
-        </p>
-
-        <div class="category-pills">
-          <span class="cat-pill">🎟️ Tickets &amp; Festivals</span>
-          <span class="cat-pill">🚀 Product Drops</span>
-          <span class="cat-pill">⚖️ Court &amp; SEC Deadlines</span>
-          <span class="cat-pill">🎓 Scholarships &amp; Grants</span>
-          <span class="cat-pill">✈️ Visa Appointment Slots</span>
-          <span class="cat-pill">💻 Hackathons &amp; Keynotes</span>
-        </div>
-      </div>
-      <div class="hero-integrations">
-        <div class="integration-card">
-          <div class="int-icon">🤖</div>
-          <div class="int-text">
-            <strong>ChatGPT &amp; Claude MCP</strong>
-            <span>Proactive event capture directly inside conversational AI chats</span>
-          </div>
-        </div>
-        <div class="integration-card">
-          <div class="int-icon">🗓️</div>
-          <div class="int-text">
-            <strong>1-Click Calendar Sync</strong>
-            <span>Dual VALARMs (T-24h &amp; T-1h) with RFC 5545 recurrence rules</span>
-          </div>
-        </div>
-        <div class="integration-card">
-          <div class="int-icon">🔒</div>
-          <div class="int-text">
-            <strong>Zero-Leak Privacy</strong>
-            <span>Private tenant-scoped vault with out-of-band claim tokens</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <div class="workspace-grid">
-      <!-- Left Column: Personal Watch Vault -->
-      <div class="main-column">
-        <section class="card" id="personalVaultSection" aria-labelledby="watchesHeading">
-          <div class="card-header">
-            <div>
-              <span class="eyebrow">🎯 Strict Multi-Tenant Isolation</span>
-              <h2 id="watchesHeading">
-                Your Monitored Events
-                <span id="watchesCountBadge" class="count-pill">0</span>
-              </h2>
+      <!-- Left Primary Column: Event Horizon -->
+      <section class="main-column" aria-labelledby="horizonHeading">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-heading-group">
+              <h1 id="horizonHeading" class="panel-title">Event Horizon</h1>
+              <span id="watchesCountBadge" class="counter-badge">0</span>
             </div>
-            <div class="filter-tabs" role="tablist" aria-label="Filter watches by status">
-              <button type="button" class="filter-tab active" data-status="all">All</button>
-              <button type="button" class="filter-tab" data-status="active_monitoring">Monitoring</button>
-              <button type="button" class="filter-tab" data-status="hibernating">Hibernating</button>
-              <button type="button" class="filter-tab" data-status="triggered_open">Open Now!</button>
+            
+            <div class="segmented-control" role="tablist" aria-label="Filter watches by status">
+              <button type="button" class="segment-btn active" data-status="all" role="tab" aria-selected="true">All</button>
+              <button type="button" class="segment-btn" data-status="active_monitoring" role="tab" aria-selected="false">Active</button>
+              <button type="button" class="segment-btn" data-status="hibernating" role="tab" aria-selected="false">Hibernating</button>
+              <button type="button" class="segment-btn" data-status="triggered_open" role="tab" aria-selected="false">Triggered</button>
             </div>
           </div>
 
-          <div id="watchesListContainer" class="watches-list">
-            <!-- Populated reactively by app.js -->
+          <div id="watchesListContainer" class="watches-stream" aria-live="polite">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Secondary Column: Delivery & Activity Deck -->
+      <aside class="side-column">
+        <!-- Delivery Destinations Panel -->
+        <section class="panel" aria-labelledby="deliveryHeading">
+          <div class="panel-header">
+            <div class="panel-heading-group">
+              <h2 id="deliveryHeading" class="panel-title-secondary">Delivery Channels</h2>
+            </div>
+            <button type="button" class="btn-text" id="browserPushQuickBtn">Enable Push</button>
+          </div>
+          <div id="channelsConfigContainer" class="channels-list">
+            <!-- Populated dynamically by app.js -->
           </div>
         </section>
-      </div>
 
-      <!-- Right Column: Personal Alert Feed & Channel Preferences -->
-      <aside class="side-column">
-        <!-- Notifications Feed -->
-        <section class="card" aria-labelledby="notifHeading">
-          <div class="card-header">
-            <div>
-              <span class="eyebrow">🔔 Private Activity Stream</span>
-              <h2 id="notifHeading">
-                Alerts &amp; Updates
-                <span id="unreadBadge" class="unread-pill hidden">0 new</span>
-              </h2>
+        <!-- Activity Stream / Outbox Panel -->
+        <section class="panel" aria-labelledby="activityHeading">
+          <div class="panel-header">
+            <div class="panel-heading-group">
+              <h2 id="activityHeading" class="panel-title-secondary">Activity Stream</h2>
+              <span id="unreadBadge" class="status-indicator-badge hidden">0</span>
             </div>
             <button type="button" class="btn-text" id="markReadBtn">Mark read</button>
           </div>
-          <div id="notificationsContainer" class="notifications-list">
-            <!-- Populated by app.js -->
-          </div>
-        </section>
-
-        <!-- Notification Channels Config -->
-        <section class="card" aria-labelledby="channelsHeading">
-          <div class="card-header">
-            <div>
-              <span class="eyebrow">📡 Alert Destinations</span>
-              <h2 id="channelsHeading">Your Delivery Channels</h2>
-            </div>
-            <button type="button" class="btn btn-sm btn-secondary" id="browserPushQuickBtn">
-              Enable Push
-            </button>
-          </div>
-          <div id="channelsConfigContainer" class="channels-list">
-            <!-- Populated by app.js -->
+          <div id="notificationsContainer" class="activity-feed">
+            <!-- Populated dynamically by app.js -->
           </div>
         </section>
       </aside>
@@ -149,55 +106,60 @@
   <dialog id="createWatchDialog" closedby="any" aria-labelledby="createWatchDialogTitle">
     <div class="dialog-content">
       <div class="dialog-header">
-        <h2 id="createWatchDialogTitle">Create Event or Web Watch</h2>
-        <button type="button" class="close-icon-btn" id="closeCreateModalBtn" aria-label="Close modal">&times;</button>
+        <h2 id="createWatchDialogTitle">New Monitored Watch</h2>
+        <button type="button" class="dialog-close-btn" id="closeCreateModalBtn" aria-label="Close modal">&times;</button>
       </div>
       <form id="createWatchForm" class="modal-form">
         <div class="form-group">
-          <label for="watchTitle">Event / Opportunity Name *</label>
-          <input type="text" id="watchTitle" name="title" required placeholder="e.g., Glastonbury 2027 Tickets or NeurIPS 2027 Submission" />
+          <label for="watchTitle">Event or Opportunity Name</label>
+          <input type="text" id="watchTitle" name="title" required placeholder="e.g. Glastonbury 2027 Registration or NeurIPS Deadline" />
         </div>
+
         <div class="form-row">
           <div class="form-group">
-            <label for="watchCategory">Event Class *</label>
+            <label for="watchCategory">Category</label>
             <select id="watchCategory" name="category" class="form-select">
-              <option value="tickets">🎟️ Tickets &amp; Passes</option>
-              <option value="product_launch">🚀 Product Launch Drop</option>
-              <option value="regulatory_deadline">⚖️ Regulatory / SEC Deadline</option>
-              <option value="scholarship">🎓 Scholarship / Fellowship</option>
-              <option value="grant">💰 Grant / Accelerator Call</option>
-              <option value="visa_slot">✈️ Visa Appointment Slot</option>
-              <option value="conference">🎤 Conference Registration</option>
-              <option value="hackathon">💻 Hackathon / Competition</option>
-              <option value="calendar_reminder">🗓️ Pure Calendar Reminder</option>
+              <option value="tickets">Tickets &amp; Passes</option>
+              <option value="product_launch">Product Drop</option>
+              <option value="regulatory_deadline">Regulatory / Compliance</option>
+              <option value="scholarship">Scholarship / Fellowship</option>
+              <option value="grant">Grant / Accelerator</option>
+              <option value="visa_slot">Visa Appointment</option>
+              <option value="conference">Conference Registration</option>
+              <option value="hackathon">Hackathon / Challenge</option>
+              <option value="calendar_reminder">Calendar Reminder</option>
             </select>
           </div>
           <div class="form-group">
-            <label for="watchWindowDate">Target Window / Deadline Date</label>
+            <label for="watchWindowDate">Target Window / Date</label>
             <input type="date" id="watchWindowDate" name="window_start_date" />
           </div>
         </div>
+
         <div class="form-group">
-          <label for="watchTargetUrl">Target URL to Monitor (Leave empty for pure scheduled reminder)</label>
-          <input type="url" id="watchTargetUrl" name="target_url" placeholder="https://example.com/tickets/register" />
+          <label for="watchTargetUrl">Monitored Web URL <span class="label-hint">(Optional — for live DOM/ETag state change detection)</span></label>
+          <input type="url" id="watchTargetUrl" name="target_url" placeholder="https://example.com/portal/apply" />
         </div>
+
         <div class="form-group">
-          <label for="watchContext">AI Action Checklist (Non-PII)</label>
-          <textarea id="watchContext" name="chat_context" rows="3" required placeholder="1. Submit abstract\n2. Prepare 2 references\n3. Complete registration before AoE deadline"></textarea>
+          <label for="watchContext">Action Checklist <span class="label-hint">(1 item per line)</span></label>
+          <textarea id="watchContext" name="chat_context" rows="3" required placeholder="Submit recommendation letters&#10;Verify GRE score delivery&#10;Complete portal submission"></textarea>
         </div>
+
         <div class="form-row">
           <div class="form-group">
-            <label for="watchEmail">Alert Recipient Email</label>
-            <input type="email" id="watchEmail" name="recipient_email" placeholder="you@example.com" />
+            <label for="watchEmail">Recipient Email <span class="label-hint">(Optional)</span></label>
+            <input type="email" id="watchEmail" name="recipient_email" placeholder="you@domain.com" />
           </div>
           <div class="form-group">
-            <label for="watchRRule">Recurring Cycle (RFC 5545 RRULE)</label>
-            <input type="text" id="watchRRule" name="rrule" placeholder="e.g., FREQ=YEARLY or FREQ=MONTHLY" />
+            <label for="watchRRule">Recurrence Rule <span class="label-hint">(RFC 5545)</span></label>
+            <input type="text" id="watchRRule" name="rrule" placeholder="FREQ=YEARLY" />
           </div>
         </div>
+
         <div class="dialog-footer">
           <button type="button" class="btn btn-secondary" id="cancelCreateModalBtn">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Watch &amp; Arm</button>
+          <button type="submit" class="btn btn-primary">Create &amp; Arm Watch</button>
         </div>
       </form>
     </div>
@@ -207,51 +169,67 @@
   <dialog id="mcpConfigDialog" closedby="any" aria-labelledby="mcpDialogTitle">
     <div class="dialog-content">
       <div class="dialog-header">
-        <h2 id="mcpDialogTitle">🔌 Connect PulseRemind to AI Chats (MCP)</h2>
-        <button type="button" class="close-icon-btn" id="closeMcpModalBtn" aria-label="Close modal">&times;</button>
+        <h2 id="mcpDialogTitle">Connect AI Assistant</h2>
+        <button type="button" class="dialog-close-btn" id="closeMcpModalBtn" aria-label="Close modal">&times;</button>
       </div>
-      <div class="mcp-modal-body">
-        <p class="muted">
-          Add PulseRemind to <strong>ChatGPT</strong>, <strong>Claude Desktop</strong>, <strong>Cursor</strong>, or <strong>Antigravity</strong> so the LLM automatically captures event watches whenever you discuss upcoming dates, deadlines, or ticket sales.
+      <div class="dialog-body">
+        <p class="dialog-text">
+          Configure your AI coding assistant or desktop client (Claude Desktop, Cursor, Antigravity, or ChatGPT) to automatically trigger temporal event watches during conversation.
         </p>
-        <h3>1. Claude Desktop / Cursor / Antigravity (`mcpServers` JSON)</h3>
-        <pre class="code-block" id="mcpConfigSnippet"></pre>
 
-        <h3>2. Streamable HTTP MCP &amp; Live Feeds</h3>
-        <ul class="endpoint-list">
-          <li><strong>MCP Streamable HTTP Endpoint:</strong> <code id="liveMcpEndpointText">https://pulse-remind.onrender.com/mcp</code></li>
-          <li><strong>ChatGPT Actions OpenAPI Spec:</strong> <a href="/api/openapi.json" target="_blank"><code id="liveOpenApiText">/api/openapi.json</code></a></li>
-          <li><strong>RFC 5545 Calendar Feed (.ics):</strong> <a href="/api/calendar/all.ics" target="_blank"><code id="liveIcsFeedText">/api/calendar/all.ics</code></a></li>
-        </ul>
+        <div class="code-section">
+          <div class="code-header">
+            <span>Desktop MCP Server Configuration</span>
+            <span class="code-badge">JSON</span>
+          </div>
+          <pre class="code-block" id="mcpConfigSnippet"></pre>
+        </div>
+
+        <div class="endpoint-specs">
+          <div class="endpoint-row">
+            <span class="endpoint-label">Streamable HTTP MCP</span>
+            <code class="endpoint-value" id="liveMcpEndpointText">https://pulse-remind.onrender.com/mcp</code>
+          </div>
+          <div class="endpoint-row">
+            <span class="endpoint-label">OpenAPI 3.1 Spec</span>
+            <a href="/api/openapi.json" target="_blank" class="endpoint-link">/api/openapi.json ↗</a>
+          </div>
+          <div class="endpoint-row">
+            <span class="endpoint-label">RFC 5545 Calendar Feed</span>
+            <a href="/api/calendar/all.ics" target="_blank" class="endpoint-link">/api/calendar/all.ics ↗</a>
+          </div>
+        </div>
       </div>
       <div class="dialog-footer">
-        <button type="button" class="btn btn-primary" id="doneMcpModalBtn">Done</button>
+        <button type="button" class="btn btn-secondary" id="doneMcpModalBtn">Done</button>
       </div>
     </div>
   </dialog>
 
-  <!-- Switch Account / Session Identity Dialog -->
+  <!-- Session Identity & Vault Switcher Dialog -->
   <dialog id="sessionDialog" closedby="any" aria-labelledby="sessionDialogTitle">
     <div class="dialog-content">
       <div class="dialog-header">
-        <h2 id="sessionDialogTitle">👤 Private Watch Vault Identity</h2>
-        <button type="button" class="close-icon-btn" id="closeSessionModalBtn" aria-label="Close modal">&times;</button>
+        <h2 id="sessionDialogTitle">Vault Identity &amp; Linking</h2>
+        <button type="button" class="dialog-close-btn" id="closeSessionModalBtn" aria-label="Close modal">&times;</button>
       </div>
-      <div class="mcp-modal-body">
-        <p class="muted">
-          Your watch vault is isolated to your cryptographic tenant identity. No other user can see your monitored events or checklists.
+      <div class="dialog-body">
+        <p class="dialog-text">
+          Watches and alerts are isolated to your cryptographic tenant identity. You can link ephemeral AI sessions to a permanent email address.
         </p>
+        
         <div class="form-group">
           <label>Current Active Tenant Identity</label>
-          <input type="text" id="currentTenantInput" readonly style="background:#0b1120;color:#94a3b8;" />
+          <input type="text" id="currentTenantInput" readonly class="input-readonly" />
         </div>
-        <form id="switchTenantForm" class="modal-form" style="margin-top:14px;">
+
+        <form id="switchTenantForm" class="modal-form" style="margin-top: 14px;">
           <div class="form-group">
-            <label for="tenantEmailLogin">Switch to Email or Existing Tenant Token</label>
-            <input type="text" id="tenantEmailLogin" placeholder="Enter your email or tenant_id" required />
+            <label for="tenantEmailLogin">Bind Email or Switch Tenant</label>
+            <input type="text" id="tenantEmailLogin" placeholder="Enter your email or tenant ID" required />
           </div>
-          <div style="display:flex;gap:10px;margin-top:10px;">
-            <button type="submit" class="btn btn-primary" style="flex:1;">Switch Vault</button>
+          <div class="form-actions-split">
+            <button type="submit" class="btn btn-primary" style="flex: 1;">Link / Switch Vault</button>
             <button type="button" class="btn btn-secondary" id="logoutSessionBtn">Clear Session</button>
           </div>
         </form>
