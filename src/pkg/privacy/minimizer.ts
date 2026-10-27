@@ -112,9 +112,19 @@ export class PrivacyMinimizer {
   }
 }
 
-export const DISALLOWED_AMBIENT_EMAILS = new Set([
+const DEFAULT_DISALLOWED_EMAILS = [
   'student@university.edu',
-  'developer@example.com'
+  'developer@example.com',
+  'ambient-developer@example.com',
+  'demo@example.com'
+];
+
+export const DISALLOWED_AMBIENT_EMAILS = new Set([
+  ...DEFAULT_DISALLOWED_EMAILS,
+  ...(process.env.DISALLOWED_AMBIENT_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
 ]);
 
 export function isDisallowedAmbientEmail(email: string | null | undefined): boolean {

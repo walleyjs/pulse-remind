@@ -1,8 +1,26 @@
 {
   "name": "pulseremind-ai-chat-tools",
   "version": "1.0.0",
-  "description": "AI Chat Opportunity Reminder & Web-Monitoring MCP Server, REST Tool API, and Multi-Channel Notification Service",
+  "description": "Universal Event, Web-State & Temporal Action Engine for AI Chats (MCP, OpenAPI, SQLite)",
   "type": "module",
+  "main": "src/index.ts",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/walleyjs/pulse-remind.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-mcp",
+    "chatgpt-action",
+    "openai-actions",
+    "temporal-engine",
+    "web-state-monitor",
+    "calendar-sync",
+    "sqlite",
+    "event-reminders"
+  ],
   "scripts": {
     "start": "node --no-warnings src/index.ts",
     "dev": "node --watch --no-warnings src/index.ts",

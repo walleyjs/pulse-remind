@@ -67,9 +67,19 @@ export function loadConfig(): AppConfig {
   const supabaseUrl = process.env.SUPABASE_URL || null;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || null;
 
-  // Enforce: In non-memory test mode, storageProvider is strictly locked to 'supabase'
+  const requestedProvider = (process.env.STORAGE_PROVIDER || '').trim().toLowerCase();
   let storageProvider: 'sqlite' | 'supabase' = 'sqlite';
-  if (process.env.PULSEREMIND_DB_PATH !== ':memory:') {
+
+  // Explicit Supabase activation requires valid credentials
+  if (requestedProvider === 'supabase') {
+    if (supabaseUrl && supabaseKey) {
+      storageProvider = 'supabase';
+    } else {
+      console.warn('[Config] STORAGE_PROVIDER=supabase requested but missing SUPABASE_URL or key. Falling back to hermetic sqlite.');
+      storageProvider = 'sqlite';
+    }
+  } else if (!requestedProvider && supabaseUrl && supabaseKey && process.env.PULSEREMIND_DB_PATH !== ':memory:') {
+    // Cloud hybrid mode if credentials exist and not in-memory test
     storageProvider = 'supabase';
   }
 

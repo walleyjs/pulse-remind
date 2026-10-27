@@ -2166,12 +2166,12 @@ test('27. Neutral Tool Response Payloads & Zero-Hallucination Cold-Start', async
   await assert.rejects(
     async () => {
       await executeMcpTool('set_notification_destination', {
-        recipient_email: 'developer@example.com',
+        recipient_email: 'ambient-developer@example.com',
         watch_id: coldWatchRes.watch_id
       });
     },
     /A valid, non-ambient recipient_email is required/,
-    'Must strictly reject ambient developer emails like developer@example.com'
+    'Must strictly reject ambient developer emails like ambient-developer@example.com'
   );
 
   await assert.rejects(
@@ -2212,7 +2212,7 @@ test('28. Strict Parameter Provenance & Hook Context Disambiguation', async () =
 
   // 28a. User discussing or complaining about an email must NOT trigger binding (negative context)
   const complaintTranscript = `
-{"step_index":1,"type":"USER_INPUT","content":"see the alert i got on chatgpt and also the email address \\"developer@example.com\\" is not my email address not the emaill address i am logged in with on chatgpt"}
+{"step_index":1,"type":"USER_INPUT","content":"see the alert i got on chatgpt and also the email address \\"ambient-developer@example.com\\" is not my email address not the emaill address i am logged in with on chatgpt"}
 {"step_index":2,"type":"PLANNER_RESPONSE","content":"I understand, let's fix that.","tool_calls":[]}
 `;
   const hookResComplaint = await evaluateTranscriptTurnForHook(complaintTranscript);
