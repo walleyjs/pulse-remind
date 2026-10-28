@@ -41,7 +41,7 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
 
     let cacheKey = canonicalPrimary;
     const primaryLocalMatch = canonicalPrimary.match(
-      /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/demo\/scholarships\/([a-z0-9\-]+)/i
+      /^https?:\/\/(?:localhost|127\.0\.0\.1|pulse-remind\.onrender\.com)(?::\d+)?\/demo\/scholarships\/([a-z0-9\-]+)/i
     );
     if (primaryLocalMatch) {
       const p = demoPortalService.getPortal(primaryLocalMatch[1]);
@@ -75,7 +75,7 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
     for (const url of endpoints) {
       const canonicalEndpoint = normalizeCanonicalUrl(url) || url;
       const localDemoMatch = canonicalEndpoint.match(
-        /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/demo\/scholarships\/([a-z0-9\-]+)/i
+        /^https?:\/\/(?:localhost|127\.0\.0\.1|pulse-remind\.onrender\.com)(?::\d+)?\/demo\/scholarships\/([a-z0-9\-]+)/i
       );
 
       if (localDemoMatch) {

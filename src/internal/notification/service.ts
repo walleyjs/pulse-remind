@@ -7,6 +7,7 @@ import { emailProvider, EmailProvider } from './providers/email.provider.ts';
 import { messagingWebhookProvider, MessagingWebhookProvider } from './providers/webhook.provider.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
 import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
+import { eventBus } from '../../pkg/events/event-bus.ts';
 
 export class NotificationService {
   private readonly repo: NotificationRepository;
@@ -41,6 +42,7 @@ export class NotificationService {
 
   markAllRead(tenantId?: string): void {
     this.repo.markAllRead(tenantId);
+    eventBus.emitEvent('notification:updated', tenantId || DEFAULT_TENANT_ID, { readAll: true });
   }
 
   getChannelConfigs(tenantId = DEFAULT_TENANT_ID): ChannelConfigRecord[] {
@@ -53,7 +55,9 @@ export class NotificationService {
     config: Record<string, string>,
     tenantId = DEFAULT_TENANT_ID
   ): ChannelConfigRecord {
-    return this.repo.updateChannelConfig(channel, enabled, config, tenantId);
+    const updated = this.repo.updateChannelConfig(channel, enabled, config, tenantId);
+    eventBus.emitEvent('channel:updated', tenantId, updated);
+    return updated;
   }
 
   getSavedDefaultEmail(tenantId = DEFAULT_TENANT_ID): string | null {
@@ -88,7 +92,7 @@ export class NotificationService {
     const subject = params.subject || params.summary || 'PulseRemind In-App Notification';
     const message = params.message || params.details || params.summary || '';
     const recipient = params.recipient || 'in_app_feed';
-    return this.repo.insert(
+    const notif = this.repo.insert(
       {
         watch_id: params.watchId,
         watch_title: params.watchTitle,
@@ -102,6 +106,8 @@ export class NotificationService {
       },
       tenantId
     ).record;
+    eventBus.emitEvent('notification:created', tenantId, notif);
+    return notif;
   }
 
   private buildIdempotencyKey(watch: WatchRecord, channel: NotificationChannelType): string {
@@ -270,6 +276,10 @@ export class NotificationService {
         message: plainMessage,
         clickUrl: evaluation.detectedApplyUrl || watch.target_url
       });
+    }
+
+    for (const notif of sentNotifications) {
+      eventBus.emitEvent('notification:created', tenantId, notif);
     }
 
     return sentNotifications;

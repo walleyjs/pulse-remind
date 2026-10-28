@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.PULSEREMIND_DB_PATH = ':memory:';
+delete process.env.RESEND_API_KEY;
 
 const { initDatabase } = await import('../src/pkg/db/bootstrap.ts');
 const { watchService } = await import('../src/internal/watch/service.ts');
@@ -2502,6 +2503,134 @@ test('31. Full-stack W3C Web Push registration, VAPID key handshake, and canary 
   // Clean up
   watchService.deleteWatch(approachWatch.id);
 });
+
+test('32. Real-Time Server-Sent Events (SSE) Bus: Streams live watch transitions and clean disconnection', async () => {
+  const { Readable } = await import('node:stream');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const { eventBus } = await import('../src/pkg/events/event-bus.ts');
+  const server = createAppServer();
+  const testTenant = 'tenant_sse_test_' + Date.now();
+
+  const chunks: string[] = [];
+  let writeHeadCalled = false;
+  let sseStatus = 0;
+  let sseHeaders: Record<string, string> = {};
+
+  const req = new Readable({ read() {} }) as any;
+  req.method = 'GET';
+  req.url = `/api/events?session=${testTenant}`;
+  req.headers = {
+    host: 'localhost:3000',
+    cookie: `prm_session=${testTenant}`
+  };
+
+  const res = {
+    writeHead(code: number, headers: any) {
+      writeHeadCalled = true;
+      sseStatus = code;
+      sseHeaders = headers;
+      return this;
+    },
+    write(chunk: any) {
+      chunks.push(String(chunk));
+      return true;
+    },
+    end() {}
+  } as any;
+
+  server.emit('request', req, res);
+
+  assert.equal(writeHeadCalled, true);
+  assert.equal(sseStatus, 200);
+  assert.equal(sseHeaders['Content-Type'], 'text/event-stream');
+  assert.ok(chunks.some((c) => c.includes('event: connected')));
+
+  // Trigger watch creation event on this tenant
+  const liveWatch = watchService.createWatch(
+    {
+      title: 'NeurIPS 2027 Registration',
+      category: 'conference',
+      chat_context: 'Testing SSE broadcast',
+      source_chat_client: 'SSE Test',
+      target_url: 'http://localhost:3000/demo/scholarships/global-ai-fellowship',
+      trigger_type: 'web_monitor',
+      condition_text: 'Open'
+    },
+    testTenant
+  );
+
+  // Verify that SSE stream received the watch:created event
+  assert.ok(
+    chunks.some((c) => c.includes('event: watch:created') && c.includes('NeurIPS 2027 Registration')),
+    'SSE stream must receive live watch:created event'
+  );
+
+  // Clean close
+  req.emit('close');
+  watchService.deleteWatch(liveWatch.id, testTenant);
+});
+
+test('33. Automatic 410 Gone / 404 Not Found Web Push Token Pruning (RFC 8030 Section 2.8)', async () => {
+  const { MessagingWebhookProvider } = await import(
+    '../src/internal/notification/providers/webhook.provider.ts'
+  );
+  const { notificationRepository } = await import('../src/internal/notification/repository.ts');
+  const testTenant = 'tenant_prune_test_' + Date.now();
+
+  const mockEndpoint = 'https://updates.push.services.mozilla.com/wpush/v2/expired_token_999';
+  notificationRepository.updateChannelConfig(
+    'web_push',
+    true,
+    {
+      endpoint: mockEndpoint,
+      p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM',
+      auth: 'tBHItJI5svbpez7KI4CCXg'
+    },
+    testTenant
+  );
+
+  // Verify channel is currently active
+  const initialConfigs = notificationRepository.getChannelConfigs(testTenant);
+  const webPushInitial = initialConfigs.find((c) => c.channel === 'web_push');
+  assert.equal(Boolean(webPushInitial?.enabled), true);
+  assert.equal(webPushInitial?.config?.endpoint, mockEndpoint);
+
+  // Intercept fetch to simulate APNs/FCM 410 Gone response
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const urlStr = String(url);
+    if (urlStr.includes('expired_token_999')) {
+      return new Response(JSON.stringify({ error: 'unregistered' }), {
+        status: 410,
+        statusText: 'Gone'
+      });
+    }
+    return originalFetch(url, init);
+  }) as typeof fetch;
+
+  try {
+    const webhookProvider = new MessagingWebhookProvider();
+    const result = await webhookProvider.send(
+      'web_push',
+      webPushInitial,
+      'Test Alert',
+      'Test message body',
+      'https://pulseremind.ai'
+    );
+
+    assert.equal(result.deliveryStatus, 'failed');
+    assert.ok(result.error?.includes('auto-pruned'), 'Error message must confirm auto-pruning');
+
+    // Verify database record has been pruned and deactivated
+    const updatedConfigs = notificationRepository.getChannelConfigs(testTenant);
+    const webPushUpdated = updatedConfigs.find((c) => c.channel === 'web_push');
+    assert.equal(Boolean(webPushUpdated?.enabled), false, 'Channel must be disabled after 410 Gone');
+    assert.equal(webPushUpdated?.config?.endpoint, '', 'Endpoint must be pruned to prevent repeated retries');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 
 
 

@@ -8,6 +8,7 @@ import type { WatchCheckOutcome } from './types.ts';
 import { normalizeCanonicalUrl } from './validator.ts';
 import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
 import { verifyProbeConsensus } from './consensus.ts';
+import { eventBus } from '../../pkg/events/event-bus.ts';
 
 export class ResolutionEngine {
   private readonly watchRepo: WatchRepository;
@@ -170,6 +171,15 @@ export class ResolutionEngine {
             tenantId: updatedWatch.tenant_id
           });
         }
+      }
+
+      eventBus.emitEvent('watch:checked', updatedWatch.tenant_id, {
+        watch: updatedWatch,
+        evaluation,
+        newlyTriggered
+      });
+      if (newlyTriggered) {
+        eventBus.emitEvent('watch:updated', updatedWatch.tenant_id, updatedWatch);
       }
 
       return {
@@ -372,6 +382,11 @@ export class ResolutionEngine {
         });
       }
     }
+
+    eventBus.emitEvent('resolution:completed', 'tenant_default', {
+      totalWatchesEvaluated: outcomes.length,
+      notificationsDispatched
+    });
 
     return {
       outcomes,

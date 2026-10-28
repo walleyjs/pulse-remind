@@ -55,7 +55,7 @@ export class MessagingWebhookProvider {
                   privateKey: channelCfg.config.vapid_private_key
                 }
               : serverVapid;
-          const vapidSubject = channelCfg?.config?.vapid_subject || 'mailto:alerts@pulseremind.ai';
+          const vapidSubject = process.env.VAPID_SUBJECT || channelCfg?.config?.vapid_subject || 'mailto:push-ops@pulseremind.ai';
           const vapid = buildVapidAuthHeader(endpoint, vapidSubject, vapidKeys);
           const encrypted = encryptWebPushPayload(
             JSON.stringify({ title: subject, body: plainMessage, url: clickUrl || '/' }),
@@ -74,8 +74,15 @@ export class MessagingWebhookProvider {
           });
           if (!res.ok) {
             deliveryStatus = 'failed';
-            retryAfterSeconds = parseRetryAfter(res.headers.get('retry-after'));
-            error = `WebPush HTTP ${res.status}`;
+            if (res.status === 404 || res.status === 410) {
+              // RFC 8030 Section 2.8: Subscription expired or revoked by user
+              notificationRepository.deactivateWebPushSubscription(endpoint, channelCfg?.tenant_id);
+              error = `WebPush HTTP ${res.status} (Subscription expired/revoked; auto-pruned)`;
+              retryAfterSeconds = undefined;
+            } else {
+              retryAfterSeconds = parseRetryAfter(res.headers.get('retry-after'));
+              error = `WebPush HTTP ${res.status}`;
+            }
           } else {
             deliveryStatus = 'delivered';
           }

@@ -1,6 +1,7 @@
 import { privacyMinimizer } from '../../pkg/privacy/minimizer.ts';
 import { watchRepository, WatchRepository } from './repository.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
+import { eventBus } from '../../pkg/events/event-bus.ts';
 import type { CheckLogRecord, CreateWatchInput, WatchRecord } from './model.ts';
 
 export class WatchService {
@@ -15,7 +16,7 @@ export class WatchService {
     const minimized = privacyMinimizer.sanitizeAndDistillContext(input.chat_context);
     const existingMeta = input.resolution_config?.provider_metadata || {};
 
-    return this.repo.create(
+    const watch = this.repo.create(
       {
         ...input,
         tenant_id: effectiveTenantId,
@@ -33,6 +34,8 @@ export class WatchService {
       },
       effectiveTenantId
     );
+    eventBus.emitEvent('watch:created', watch.tenant_id, watch);
+    return watch;
   }
 
   listWatches(statusFilter?: string, tenantId?: string, userEmail?: string | null): WatchRecord[] {
@@ -59,11 +62,19 @@ export class WatchService {
     updates: Parameters<WatchRepository['updateFields']>[1],
     tenantId?: string
   ): WatchRecord | null {
-    return this.repo.updateFields(id, updates, tenantId);
+    const updated = this.repo.updateFields(id, updates, tenantId);
+    if (updated) {
+      eventBus.emitEvent('watch:updated', updated.tenant_id, updated);
+    }
+    return updated;
   }
 
   deleteWatch(id: string, tenantId?: string): boolean {
-    return this.repo.delete(id, tenantId);
+    const ok = this.repo.delete(id, tenantId);
+    if (ok) {
+      eventBus.emitEvent('watch:deleted', tenantId || DEFAULT_TENANT_ID, { id });
+    }
+    return ok;
   }
 
   toggleChecklistItem(
@@ -108,7 +119,11 @@ export class WatchService {
     },
     tenantId?: string
   ): WatchRecord | null {
-    return this.repo.claimSubscriberToken(token, params, tenantId);
+    const claimed = this.repo.claimSubscriberToken(token, params, tenantId);
+    if (claimed) {
+      eventBus.emitEvent('watch:updated', claimed.tenant_id, claimed);
+    }
+    return claimed;
   }
 
   bindNotificationDestination(params: {

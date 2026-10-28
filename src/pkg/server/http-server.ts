@@ -19,6 +19,7 @@ import { buildWatchIcsFeed, buildWatchCalendarLinks } from '../calendar/ics.ts';
 import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
+import { eventBus } from '../events/event-bus.ts';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -702,6 +703,51 @@ export function createAppServer(): http.Server {
           check_logs: checkLogs,
           channels,
           mcp_tools: MCP_TOOLS
+        });
+        return;
+      }
+
+      // 4b. Real-Time Server-Sent Events (SSE) Bus
+      if (pathname === '/api/events' && req.method === 'GET') {
+        const { tenantId, userEmail, isExplicitTenant } = extractTenantId(req.headers, parsedUrl.searchParams);
+        let effectiveTenantId = tenantId;
+        if (!userEmail && isExplicitTenant) {
+          const saved = notificationService.getSavedDefaultEmail(tenantId);
+          if (saved && !isDisallowedAmbientEmail(saved)) {
+            const { canonicalTenantId } = watchService.reconcileTenantIdentity(saved, tenantId);
+            effectiveTenantId = canonicalTenantId;
+          }
+        } else if (userEmail) {
+          const { canonicalTenantId } = watchService.reconcileTenantIdentity(userEmail, tenantId);
+          effectiveTenantId = canonicalTenantId;
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'X-Accel-Buffering': 'no'
+        });
+
+        res.write(`retry: 3000\n\n`);
+        res.write(`event: connected\ndata: ${JSON.stringify({ tenant_id: effectiveTenantId, timestamp: new Date().toISOString() })}\n\n`);
+
+        const unsubscribe = eventBus.subscribeTenant(effectiveTenantId, (evt) => {
+          try {
+            res.write(`id: ${evt.id}\nevent: ${evt.type}\ndata: ${JSON.stringify(evt.data)}\n\n`);
+          } catch {}
+        });
+
+        const heartbeat = setInterval(() => {
+          try {
+            res.write(`: heartbeat ${Date.now()}\n\n`);
+          } catch {}
+        }, 15000);
+
+        req.on('close', () => {
+          clearInterval(heartbeat);
+          unsubscribe();
         });
         return;
       }

@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 function loadDotEnvIfPresent(): void {
+  if (process.env.NODE_ENV === 'test' || process.env.PULSEREMIND_DB_PATH === ':memory:') {
+    return;
+  }
   const candidatePaths = [
     path.join(process.cwd(), '.env'),
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env')

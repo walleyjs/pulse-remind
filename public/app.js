@@ -159,41 +159,232 @@ function renderAll() {
   renderChannels();
 }
 
+function renderWatchCardHtml(w, isDrawerOpen = false) {
+  const catLabel = getCategoryLabel(w.category);
+  const phaseBadge = getTemporalPhaseBadge(w);
+  const targetDate = w.window_start_date || w.detected_deadline;
+  const isTriggered = w.status === 'triggered_open';
+  const countdown = calculateCountdown(targetDate, isTriggered);
+  const domain = extractDomain(w.target_url);
+
+  let countdownHtml = '';
+  if (countdown) {
+    if (countdown.expired) {
+      const badgeClass = countdown.isTriggered ? 'countdown-clock live' : 'countdown-clock approaching';
+      countdownHtml = `<span class="${badgeClass}">${escapeHtml(countdown.text)}</span>`;
+    } else {
+      const isUrgent = countdown.days <= 3;
+      countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
+    }
+  }
+
+  // Parse Action Checklist items
+  const meta = w.resolution_config?.provider_metadata || {};
+  const completedList = Array.isArray(meta.checklist_completed) ? meta.checklist_completed : [];
+  const rawChecklist = w.chat_context || '';
+  const checklistItems = rawChecklist
+    .split('\n')
+    .map((l) => l.trim().replace(/^[0-9.\-\s*]+/, ''))
+    .filter((l) => l.length > 2);
+
+  let checklistHtml = '';
+  if (checklistItems.length > 0) {
+    checklistHtml = `
+      <div class="checklist-container">
+        ${checklistItems
+          .map((item) => {
+            const isChecked = completedList.includes(item);
+            return `
+            <label class="checklist-label ${isChecked ? 'is-done' : ''}">
+              <input type="checkbox" data-watch-id="${w.id}" data-item="${escapeHtml(item)}" ${isChecked ? 'checked' : ''} />
+              <span>${escapeHtml(item)}</span>
+            </label>
+          `;
+          })
+          .join('')}
+      </div>
+    `;
+  }
+
+  const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(w.title)}&dates=${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T090000Z/${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T100000Z&details=${encodeURIComponent(w.chat_context || w.title)}`;
+  const icsDownloadUrl = `/api/watches/${encodeURIComponent(w.id)}/calendar.ics`;
+
+  return `
+    <article class="watch-row ${isTriggered ? 'is-triggered' : ''}" data-watch-id="${w.id}">
+      <div class="watch-row-header">
+        <div style="flex: 1; min-width: 0;">
+          <div class="watch-meta-strip">
+            ${phaseBadge}
+            <span class="category-tag">${escapeHtml(catLabel)}</span>
+            ${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}
+            ${countdownHtml}
+          </div>
+          <h3 class="watch-title">${escapeHtml(w.title)}</h3>
+          <p class="watch-window-summary">
+            Target: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Unspecified')}</strong>
+            ${w.detected_deadline ? ` · Deadline: <strong>${escapeHtml(w.detected_deadline)}</strong>` : ''}
+          </p>
+        </div>
+        <div class="watch-row-actions">
+          <button type="button" class="btn btn-secondary btn-compact btn-check-now" data-watch-id="${w.id}" title="Run immediate verification check">
+            Check
+          </button>
+          <button type="button" class="btn btn-danger btn-compact btn-delete-watch" data-watch-id="${w.id}" title="Delete watch" aria-label="Delete watch">
+            &times;
+          </button>
+        </div>
+      </div>
+
+      ${checklistHtml}
+
+      <div class="watch-bottom-strip">
+        <div class="action-links-group">
+          <a class="link-btn" href="${googleCalUrl}" target="_blank" rel="noopener">Add to Google Cal</a>
+          <a class="link-btn" href="${icsDownloadUrl}" download="${w.id}.ics">Download .ics</a>
+          ${w.target_url ? `<a class="link-btn primary-link" href="${escapeHtml(w.target_url)}" target="_blank" rel="noopener">Visit Site ↗</a>` : ''}
+          <button type="button" class="btn-text btn-toggle-drawer" data-watch-id="${w.id}">${isDrawerOpen ? 'Hide Details ▴' : 'Details ▾'}</button>
+        </div>
+        <span class="domain-tag last-checked-tag">Last checked: ${formatTime(w.last_checked_at)}</span>
+      </div>
+
+      <div class="inspection-drawer ${isDrawerOpen ? '' : 'hidden'}" id="drawer-${w.id}">
+        <div class="inspection-grid">
+          <div class="inspection-item">
+            <span class="inspection-key">Watch ID</span>
+            <span class="inspection-value">${escapeHtml(w.id)}</span>
+          </div>
+          <div class="inspection-item">
+            <span class="inspection-key">ETag / State Hash</span>
+            <span class="inspection-value">${escapeHtml(w.resolution_config?.etag || 'None / Polling')}</span>
+          </div>
+          <div class="inspection-item">
+            <span class="inspection-key">Channels</span>
+            <span class="inspection-value">${escapeHtml((w.notify_channels || []).join(', ') || 'In-App')}</span>
+          </div>
+          <div class="inspection-item">
+            <span class="inspection-key">Claim URL</span>
+            <span class="inspection-value"><a href="/claim?token=${escapeHtml(w.subscriber_token || '')}" class="endpoint-link" target="_blank">Direct Claim Link ↗</a></span>
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function updateWatchCardDom(cardEl, w, isDrawerOpen) {
+  const isTriggered = w.status === 'triggered_open';
+  const targetClass = `watch-row ${isTriggered ? 'is-triggered' : ''}`;
+  if (cardEl.className !== targetClass) cardEl.className = targetClass;
+
+  const titleEl = cardEl.querySelector('.watch-title');
+  if (titleEl && titleEl.textContent !== w.title) {
+    titleEl.textContent = w.title;
+  }
+
+  const summaryEl = cardEl.querySelector('.watch-window-summary');
+  if (summaryEl) {
+    const summaryHtml = `Target: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Unspecified')}</strong>${w.detected_deadline ? ` · Deadline: <strong>${escapeHtml(w.detected_deadline)}</strong>` : ''}`;
+    if (summaryEl.innerHTML !== summaryHtml) {
+      summaryEl.innerHTML = summaryHtml;
+    }
+  }
+
+  const lastCheckedEl = cardEl.querySelector('.last-checked-tag');
+  if (lastCheckedEl) {
+    const text = `Last checked: ${formatTime(w.last_checked_at)}`;
+    if (lastCheckedEl.textContent !== text) {
+      lastCheckedEl.textContent = text;
+    }
+  }
+
+  const metaStrip = cardEl.querySelector('.watch-meta-strip');
+  if (metaStrip) {
+    const targetDate = w.window_start_date || w.detected_deadline;
+    const countdown = calculateCountdown(targetDate, isTriggered);
+    const domain = extractDomain(w.target_url);
+    const catLabel = getCategoryLabel(w.category);
+    const phaseBadge = getTemporalPhaseBadge(w);
+    let countdownHtml = '';
+    if (countdown) {
+      if (countdown.expired) {
+        const badgeClass = countdown.isTriggered ? 'countdown-clock live' : 'countdown-clock approaching';
+        countdownHtml = `<span class="${badgeClass}">${escapeHtml(countdown.text)}</span>`;
+      } else {
+        const isUrgent = countdown.days <= 3;
+        countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
+      }
+    }
+    const expectedMetaHtml = `${phaseBadge}<span class="category-tag">${escapeHtml(catLabel)}</span>${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}${countdownHtml}`.replace(/\s+/g, ' ');
+    const currentMetaHtml = metaStrip.innerHTML.replace(/\s+/g, ' ');
+    if (currentMetaHtml !== expectedMetaHtml) {
+      metaStrip.innerHTML = expectedMetaHtml;
+    }
+  }
+
+  const meta = w.resolution_config?.provider_metadata || {};
+  const completedList = Array.isArray(meta.checklist_completed) ? meta.checklist_completed : [];
+  cardEl.querySelectorAll('input[type="checkbox"][data-item]').forEach((chk) => {
+    const item = chk.getAttribute('data-item');
+    const isDone = completedList.includes(item);
+    if (chk.checked !== isDone) {
+      chk.checked = isDone;
+      const label = chk.closest('.checklist-label');
+      if (label) {
+        if (isDone) label.classList.add('is-done');
+        else label.classList.remove('is-done');
+      }
+    }
+  });
+
+  const drawerEl = cardEl.querySelector('.inspection-drawer');
+  const drawerBtn = cardEl.querySelector('.btn-toggle-drawer');
+  if (drawerEl) {
+    if (isDrawerOpen) {
+      drawerEl.classList.remove('hidden');
+      if (drawerBtn) drawerBtn.textContent = 'Hide Details ▴';
+    } else {
+      drawerEl.classList.add('hidden');
+      if (drawerBtn) drawerBtn.textContent = 'Details ▾';
+    }
+  }
+}
+
 function renderWatches() {
   const container = document.getElementById('watchesListContainer');
   const countBadge = document.getElementById('watchesCountBadge');
   if (!container) return;
 
   const allWatches = latestState.watches || [];
-  if (countBadge) countBadge.textContent = String(allWatches.length);
+  if (countBadge && countBadge.textContent !== String(allWatches.length)) {
+    countBadge.textContent = String(allWatches.length);
+  }
 
-  // Pristine Minimalist Empty State
   if (allWatches.length === 0) {
-    container.innerHTML = `
-      <div class="zero-state-view">
-        <div class="zero-state-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <polyline points="12 6 12 12 16 14"></polyline>
-          </svg>
+    if (!container.querySelector('.zero-state-view')) {
+      container.innerHTML = `
+        <div class="zero-state-view">
+          <div class="zero-state-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+          </div>
+          <h3 class="zero-state-title">No Monitored Events</h3>
+          <p class="zero-state-desc">
+            When an AI assistant schedules a reminder or monitors an upcoming release, your active watches and live countdowns will appear here.
+          </p>
+          <button type="button" class="btn btn-secondary btn-compact" id="zeroStateCreateBtn">
+            + New Watch
+          </button>
         </div>
-        <h3 class="zero-state-title">No Monitored Events</h3>
-        <p class="zero-state-desc">
-          When an AI assistant schedules a reminder or monitors an upcoming release, your active watches and live countdowns will appear here.
-        </p>
-        <button type="button" class="btn btn-secondary btn-compact" id="zeroStateCreateBtn">
-          + New Watch
-        </button>
-      </div>
-    `;
-
-    document.getElementById('zeroStateCreateBtn')?.addEventListener('click', () => {
-      document.getElementById('createWatchDialog')?.showModal();
-    });
+      `;
+      document.getElementById('zeroStateCreateBtn')?.addEventListener('click', () => {
+        document.getElementById('createWatchDialog')?.showModal();
+      });
+    }
     return;
   }
 
-  // Filter watches by current status tab
   const filtered = allWatches.filter((w) => {
     if (currentFilter === 'all') return true;
     if (currentFilter === 'triggered_open') return w.status === 'triggered_open';
@@ -205,186 +396,53 @@ function renderWatches() {
   });
 
   if (filtered.length === 0) {
-    container.innerHTML = `<p class="empty-state">No watches matching filter "${currentFilter}".</p>`;
+    const emptyMsg = `<p class="empty-state">No watches matching filter "${currentFilter}".</p>`;
+    if (container.innerHTML !== emptyMsg) {
+      container.innerHTML = emptyMsg;
+    }
     return;
   }
 
-  container.innerHTML = filtered
-    .map((w) => {
-      const catLabel = getCategoryLabel(w.category);
-      const phaseBadge = getTemporalPhaseBadge(w);
-      const targetDate = w.window_start_date || w.detected_deadline;
-      const isTriggered = w.status === 'triggered_open';
-      const countdown = calculateCountdown(targetDate, isTriggered);
-      const domain = extractDomain(w.target_url);
+  if (container.querySelector('.zero-state-view') || container.querySelector('.empty-state')) {
+    container.innerHTML = '';
+  }
 
-      let countdownHtml = '';
-      if (countdown) {
-        if (countdown.expired) {
-          const badgeClass = countdown.isTriggered ? 'countdown-clock live' : 'countdown-clock approaching';
-          countdownHtml = `<span class="${badgeClass}">${escapeHtml(countdown.text)}</span>`;
-        } else {
-          const isUrgent = countdown.days <= 3;
-          countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
-        }
-      }
+  const openDrawers = new Set(
+    Array.from(container.querySelectorAll('.inspection-drawer:not(.hidden)')).map((d) =>
+      d.id.replace('drawer-', '')
+    )
+  );
 
-      // Parse Action Checklist items
-      const meta = w.resolution_config?.provider_metadata || {};
-      const completedList = Array.isArray(meta.checklist_completed) ? meta.checklist_completed : [];
-      const rawChecklist = w.chat_context || '';
-      const checklistItems = rawChecklist
-        .split('\n')
-        .map((l) => l.trim().replace(/^[0-9.\-\s*]+/, ''))
-        .filter((l) => l.length > 2);
-
-      let checklistHtml = '';
-      if (checklistItems.length > 0) {
-        checklistHtml = `
-          <div class="checklist-container">
-            ${checklistItems
-              .map((item) => {
-                const isChecked = completedList.includes(item);
-                return `
-                <label class="checklist-label ${isChecked ? 'is-done' : ''}">
-                  <input type="checkbox" data-watch-id="${w.id}" data-item="${escapeHtml(item)}" ${isChecked ? 'checked' : ''} />
-                  <span>${escapeHtml(item)}</span>
-                </label>
-              `;
-              })
-              .join('')}
-          </div>
-        `;
-      }
-
-      // Calendar Links
-      const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(w.title)}&dates=${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T090000Z/${(w.window_start_date || '20261101').replace(/[-:]/g, '')}T100000Z&details=${encodeURIComponent(w.chat_context || w.title)}`;
-      const icsDownloadUrl = `/api/watches/${encodeURIComponent(w.id)}/calendar.ics`;
-
-      const isTriggered = w.status === 'triggered_open';
-
-      return `
-        <article class="watch-row ${isTriggered ? 'is-triggered' : ''}" data-watch-id="${w.id}">
-          <div class="watch-row-header">
-            <div style="flex: 1; min-width: 0;">
-              <div class="watch-meta-strip">
-                ${phaseBadge}
-                <span class="category-tag">${escapeHtml(catLabel)}</span>
-                ${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}
-                ${countdownHtml}
-              </div>
-              <h3 class="watch-title">${escapeHtml(w.title)}</h3>
-              <p class="watch-window-summary">
-                Target: <strong>${escapeHtml(w.window_label || w.window_start_date || 'Unspecified')}</strong>
-                ${w.detected_deadline ? ` · Deadline: <strong>${escapeHtml(w.detected_deadline)}</strong>` : ''}
-              </p>
-            </div>
-            <div class="watch-row-actions">
-              <button type="button" class="btn btn-secondary btn-compact btn-check-now" data-watch-id="${w.id}" title="Run immediate verification check">
-                Check
-              </button>
-              <button type="button" class="btn btn-danger btn-compact btn-delete-watch" data-watch-id="${w.id}" title="Delete watch" aria-label="Delete watch">
-                &times;
-              </button>
-            </div>
-          </div>
-
-          ${checklistHtml}
-
-          <div class="watch-bottom-strip">
-            <div class="action-links-group">
-              <a class="link-btn" href="${googleCalUrl}" target="_blank" rel="noopener">Add to Google Cal</a>
-              <a class="link-btn" href="${icsDownloadUrl}" download="${w.id}.ics">Download .ics</a>
-              ${w.target_url ? `<a class="link-btn primary-link" href="${escapeHtml(w.target_url)}" target="_blank" rel="noopener">Visit Site ↗</a>` : ''}
-              <button type="button" class="btn-text btn-toggle-drawer" data-watch-id="${w.id}">Details ▾</button>
-            </div>
-            <span class="domain-tag">Last checked: ${formatTime(w.last_checked_at)}</span>
-          </div>
-
-          <div class="inspection-drawer hidden" id="drawer-${w.id}">
-            <div class="inspection-grid">
-              <div class="inspection-item">
-                <span class="inspection-key">Watch ID</span>
-                <span class="inspection-value">${escapeHtml(w.id)}</span>
-              </div>
-              <div class="inspection-item">
-                <span class="inspection-key">ETag / State Hash</span>
-                <span class="inspection-value">${escapeHtml(w.resolution_config?.etag || 'None / Polling')}</span>
-              </div>
-              <div class="inspection-item">
-                <span class="inspection-key">Channels</span>
-                <span class="inspection-value">${escapeHtml((w.notify_channels || []).join(', ') || 'In-App')}</span>
-              </div>
-              <div class="inspection-item">
-                <span class="inspection-key">Claim URL</span>
-                <span class="inspection-value"><a href="/claim?token=${escapeHtml(w.subscriber_token || '')}" class="endpoint-link" target="_blank">Direct Claim Link ↗</a></span>
-              </div>
-            </div>
-          </div>
-        </article>
-      `;
-    })
-    .join('');
-
-  // Attach checklist interactive toggle handlers
-  container.querySelectorAll('input[type="checkbox"][data-watch-id]').forEach((chk) => {
-    chk.addEventListener('change', async () => {
-      const watchId = chk.getAttribute('data-watch-id');
-      const itemText = chk.getAttribute('data-item');
-      const completed = chk.checked;
-      const label = chk.closest('.checklist-label');
-      if (label) {
-        if (completed) label.classList.add('is-done');
-        else label.classList.remove('is-done');
-      }
-
-      try {
-        await fetch(`/api/watches/${encodeURIComponent(watchId)}/checklist`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item: itemText, completed })
-        });
-      } catch (err) {
-        console.error('Checklist update failed', err);
-      }
-    });
+  const existingMap = new Map();
+  container.querySelectorAll('.watch-row[data-watch-id]').forEach((el) => {
+    existingMap.set(el.getAttribute('data-watch-id'), el);
   });
 
-  // Attach drawer toggle handlers
-  container.querySelectorAll('.btn-toggle-drawer').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-watch-id');
-      const drawer = document.getElementById(`drawer-${id}`);
-      if (drawer) {
-        const isHidden = drawer.classList.toggle('hidden');
-        btn.textContent = isHidden ? 'Details ▾' : 'Hide Details ▴';
-      }
-    });
-  });
+  const nextNodes = [];
+  for (const w of filtered) {
+    const isDrawerOpen = openDrawers.has(w.id);
+    const existing = existingMap.get(w.id);
+    if (existing) {
+      existingMap.delete(w.id);
+      updateWatchCardDom(existing, w, isDrawerOpen);
+      nextNodes.push(existing);
+    } else {
+      const temp = document.createElement('div');
+      temp.innerHTML = renderWatchCardHtml(w, isDrawerOpen);
+      nextNodes.push(temp.firstElementChild);
+    }
+  }
 
-  // Attach Check Now and Delete handlers
-  container.querySelectorAll('.btn-check-now').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-watch-id');
-      btn.textContent = 'Checking...';
-      try {
-        await fetch(`/api/watches/${encodeURIComponent(id)}/check`, { method: 'POST' });
-        await fetchOverview();
-      } catch {
-        btn.textContent = 'Check';
-      }
-    });
-  });
+  for (const [_, stale] of existingMap) {
+    stale.remove();
+  }
 
-  container.querySelectorAll('.btn-delete-watch').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-watch-id');
-      if (confirm('Delete this monitored watch?')) {
-        await fetch(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        await fetchOverview();
-      }
-    });
-  });
+  for (let i = 0; i < nextNodes.length; i++) {
+    const node = nextNodes[i];
+    if (container.children[i] !== node) {
+      container.insertBefore(node, container.children[i] || null);
+    }
+  }
 }
 
 function renderNotifications() {
@@ -397,7 +455,7 @@ function renderNotifications() {
 
   if (badge) {
     if (unread > 0) {
-      badge.textContent = `${unread}`;
+      if (badge.textContent !== String(unread)) badge.textContent = `${unread}`;
       badge.classList.remove('hidden');
     } else {
       badge.classList.add('hidden');
@@ -405,33 +463,60 @@ function renderNotifications() {
   }
 
   if (list.length === 0) {
-    container.innerHTML = '<p class="empty-state">No alerts or checks dispatched yet.</p>';
+    if (!container.querySelector('.empty-state')) {
+      container.innerHTML = '<p class="empty-state">No alerts or checks dispatched yet.</p>';
+    }
     return;
   }
 
-  container.innerHTML = list
-    .slice(0, 15)
-    .map((n) => {
-      return `
-      <div class="activity-item ${n.is_read ? '' : 'unread'}" data-notif-id="${n.id}">
-        <div class="activity-header">
-          <span class="activity-channel">${escapeHtml(n.channel)}</span>
-          <span class="activity-time">${formatTime(n.created_at)}</span>
-        </div>
-        <div class="activity-subject">${escapeHtml(n.subject)}</div>
-        <div class="activity-body">${escapeHtml(n.message)}</div>
-      </div>
-    `;
-    })
-    .join('');
-
-  container.querySelectorAll('.activity-item.unread').forEach((item) => {
-    item.addEventListener('click', async () => {
-      const id = item.getAttribute('data-notif-id');
-      await fetch(`/api/notifications/${encodeURIComponent(id)}/open`, { method: 'POST' });
-      item.classList.remove('unread');
-    });
+  const existingMap = new Map();
+  container.querySelectorAll('.activity-item[data-notif-id]').forEach((el) => {
+    existingMap.set(el.getAttribute('data-notif-id'), el);
   });
+
+  const nextItems = list.slice(0, 15);
+  const nextNodes = [];
+
+  for (const n of nextItems) {
+    const existing = existingMap.get(n.id);
+    if (existing) {
+      existingMap.delete(n.id);
+      const isUnread = !n.is_read;
+      if (isUnread && !existing.classList.contains('unread')) {
+        existing.classList.add('unread');
+      } else if (!isUnread && existing.classList.contains('unread')) {
+        existing.classList.remove('unread');
+      }
+      nextNodes.push(existing);
+    } else {
+      const temp = document.createElement('div');
+      temp.innerHTML = `
+        <div class="activity-item ${n.is_read ? '' : 'unread'}" data-notif-id="${n.id}">
+          <div class="activity-header">
+            <span class="activity-channel">${escapeHtml(n.channel)}</span>
+            <span class="activity-time">${formatTime(n.created_at)}</span>
+          </div>
+          <div class="activity-subject">${escapeHtml(n.subject)}</div>
+          <div class="activity-body">${escapeHtml(n.message)}</div>
+        </div>
+      `;
+      nextNodes.push(temp.firstElementChild);
+    }
+  }
+
+  for (const [_, stale] of existingMap) {
+    stale.remove();
+  }
+
+  const emptyEl = container.querySelector('.empty-state');
+  if (emptyEl) emptyEl.remove();
+
+  for (let i = 0; i < nextNodes.length; i++) {
+    const node = nextNodes[i];
+    if (container.children[i] !== node) {
+      container.insertBefore(node, container.children[i] || null);
+    }
+  }
 }
 
 function renderChannels() {
@@ -440,43 +525,206 @@ function renderChannels() {
 
   const channels = latestState.channels || [];
   if (channels.length === 0) {
-    container.innerHTML = '<p class="empty-state">Loading channels...</p>';
+    if (!container.querySelector('.empty-state')) {
+      container.innerHTML = '<p class="empty-state">Loading channels...</p>';
+    }
     return;
   }
 
-  container.innerHTML = channels
-    .map((ch) => {
-      const isEnabled = Boolean(ch.enabled);
-      let desc = '';
-      if (ch.channel === 'email') desc = ch.config?.default_recipient ? escapeHtml(ch.config.default_recipient) : 'Unbound — set via chat or session';
-      else if (ch.channel === 'in_app') desc = 'In-browser feed & live state';
-      else if (ch.channel === 'web_push') desc = 'Standard W3C Web Push';
-      else desc = ch.config?.webhook_url ? 'Webhook connected' : 'Not configured';
+  const existingCards = new Map();
+  container.querySelectorAll('.channel-card[data-channel]').forEach((el) => {
+    existingCards.set(el.getAttribute('data-channel'), el);
+  });
 
-      return `
-      <div class="channel-card">
-        <div class="channel-info">
-          <strong>${escapeHtml(ch.channel.replace('_', ' '))}</strong>
-          <span>${desc}</span>
+  const nextNodes = [];
+  for (const ch of channels) {
+    const isEnabled = Boolean(ch.enabled);
+    let desc = '';
+    if (ch.channel === 'email') {
+      desc = ch.config?.default_recipient ? escapeHtml(ch.config.default_recipient) : 'Unbound — set via chat or session';
+    } else if (ch.channel === 'in_app') {
+      desc = 'In-browser feed & live state';
+    } else if (ch.channel === 'web_push') {
+      desc = ch.config?.endpoint ? 'Browser & Mobile System Alerts (Active)' : 'Standard W3C Web Push';
+    } else {
+      desc = ch.config?.webhook_url ? 'Webhook connected' : 'Not configured';
+    }
+
+    const existing = existingCards.get(ch.channel);
+    if (existing) {
+      existingCards.delete(ch.channel);
+      const descEl = existing.querySelector('.channel-info span');
+      if (descEl && descEl.textContent !== desc) descEl.textContent = desc;
+      const chk = existing.querySelector('input[type="checkbox"]');
+      if (chk && chk.checked !== isEnabled) chk.checked = isEnabled;
+      nextNodes.push(existing);
+    } else {
+      const temp = document.createElement('div');
+      temp.innerHTML = `
+        <div class="channel-card" data-channel="${ch.channel}">
+          <div class="channel-info">
+            <strong>${escapeHtml(ch.channel.replace('_', ' '))}</strong>
+            <span>${desc}</span>
+          </div>
+          <label class="switch" aria-label="Toggle ${escapeHtml(ch.channel)}">
+            <input type="checkbox" data-channel="${ch.channel}" ${isEnabled ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
         </div>
-        <label class="switch" aria-label="Toggle ${escapeHtml(ch.channel)}">
-          <input type="checkbox" data-channel="${ch.channel}" ${isEnabled ? 'checked' : ''} />
-          <span class="slider"></span>
-        </label>
-      </div>
-    `;
-    })
-    .join('');
+      `;
+      nextNodes.push(temp.firstElementChild);
+    }
+  }
+
+  for (const [_, stale] of existingCards) {
+    stale.remove();
+  }
+
+  const emptyEl = container.querySelector('.empty-state');
+  if (emptyEl) emptyEl.remove();
+
+  for (let i = 0; i < nextNodes.length; i++) {
+    const node = nextNodes[i];
+    if (container.children[i] !== node) {
+      container.insertBefore(node, container.children[i] || null);
+    }
+  }
 
   const webPushConfig = channels.find((c) => c.channel === 'web_push');
   const pushBtn = document.getElementById('browserPushQuickBtn');
-  if (pushBtn && webPushConfig?.enabled) {
-    pushBtn.textContent = 'Push Active ✓';
-    pushBtn.style.color = '#10b981';
+  if (pushBtn) {
+    if (webPushConfig?.enabled) {
+      pushBtn.textContent = 'Push Active ✓';
+      pushBtn.style.color = '#10b981';
+    } else {
+      pushBtn.textContent = 'Enable Push';
+      pushBtn.style.color = '';
+    }
+  }
+}
+
+// Living countdown clock updater (driftless second-aligned scheduling, zero redundant mutations)
+let timerRunning = false;
+
+function tickLivingTimers() {
+  const clocks = document.querySelectorAll('.countdown-clock[data-target-date]');
+  if (clocks.length === 0) return;
+  for (let i = 0; i < clocks.length; i++) {
+    const el = clocks[i];
+    const dateIso = el.getAttribute('data-target-date');
+    const cd = calculateCountdown(dateIso, false);
+    if (!cd) continue;
+    if (cd.expired) {
+      const targetClass = 'countdown-clock approaching';
+      if (el.className !== targetClass) el.className = targetClass;
+      if (el.textContent !== 'Monitoring Window Active') el.textContent = 'Monitoring Window Active';
+      el.removeAttribute('data-target-date');
+    } else {
+      if (el.textContent !== cd.text) {
+        el.textContent = cd.text;
+      }
+      const targetClass = cd.days <= 3 ? 'countdown-clock urgent' : 'countdown-clock';
+      if (el.className !== targetClass) {
+        el.className = targetClass;
+      }
+    }
+  }
+}
+
+function startLivingTimers() {
+  if (timerRunning) return;
+  timerRunning = true;
+
+  function scheduleNextTick() {
+    const now = Date.now();
+    const delay = Math.max(50, 1000 - (now % 1000));
+    setTimeout(() => {
+      tickLivingTimers();
+      scheduleNextTick();
+    }, delay);
+  }
+  scheduleNextTick();
+}
+
+function setupEventDelegation() {
+  const watchContainer = document.getElementById('watchesListContainer');
+  if (watchContainer) {
+    watchContainer.addEventListener('change', async (e) => {
+      const chk = e.target.closest('input[type="checkbox"][data-watch-id]');
+      if (!chk) return;
+      const watchId = chk.getAttribute('data-watch-id');
+      const itemText = chk.getAttribute('data-item');
+      const completed = chk.checked;
+      const label = chk.closest('.checklist-label');
+      if (label) {
+        if (completed) label.classList.add('is-done');
+        else label.classList.remove('is-done');
+      }
+      try {
+        await fetch(`/api/watches/${encodeURIComponent(watchId)}/checklist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item: itemText, completed })
+        });
+      } catch (err) {
+        console.error('Checklist update failed', err);
+      }
+    });
+
+    watchContainer.addEventListener('click', async (e) => {
+      const drawerBtn = e.target.closest('.btn-toggle-drawer');
+      if (drawerBtn) {
+        const id = drawerBtn.getAttribute('data-watch-id');
+        const drawer = document.getElementById(`drawer-${id}`);
+        if (drawer) {
+          const isHidden = drawer.classList.toggle('hidden');
+          drawerBtn.textContent = isHidden ? 'Details ▾' : 'Hide Details ▴';
+        }
+        return;
+      }
+
+      const checkBtn = e.target.closest('.btn-check-now');
+      if (checkBtn) {
+        const id = checkBtn.getAttribute('data-watch-id');
+        const origText = checkBtn.textContent;
+        checkBtn.textContent = 'Checking...';
+        try {
+          await fetch(`/api/watches/${encodeURIComponent(id)}/check`, { method: 'POST' });
+          await fetchOverview();
+        } catch {
+          checkBtn.textContent = origText;
+        }
+        return;
+      }
+
+      const deleteBtn = e.target.closest('.btn-delete-watch');
+      if (deleteBtn) {
+        const id = deleteBtn.getAttribute('data-watch-id');
+        if (confirm('Delete this monitored watch?')) {
+          await fetch(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          await fetchOverview();
+        }
+        return;
+      }
+    });
   }
 
-  container.querySelectorAll('input[data-channel]').forEach((chk) => {
-    chk.addEventListener('change', async () => {
+  const notifContainer = document.getElementById('notificationsContainer');
+  if (notifContainer) {
+    notifContainer.addEventListener('click', async (e) => {
+      const item = e.target.closest('.activity-item.unread');
+      if (!item) return;
+      const id = item.getAttribute('data-notif-id');
+      await fetch(`/api/notifications/${encodeURIComponent(id)}/open`, { method: 'POST' });
+      item.classList.remove('unread');
+    });
+  }
+
+  const channelsContainer = document.getElementById('channelsConfigContainer');
+  if (channelsContainer) {
+    channelsContainer.addEventListener('change', async (e) => {
+      const chk = e.target.closest('input[data-channel]');
+      if (!chk) return;
       const channel = chk.getAttribute('data-channel');
       const enabled = chk.checked;
       await fetch('/api/channels', {
@@ -486,26 +734,40 @@ function renderChannels() {
       });
       await fetchOverview();
     });
-  });
+  }
 }
 
-// Living countdown clock updater (ticks every 1000ms)
-function startLivingTimers() {
-  setInterval(() => {
-    document.querySelectorAll('.countdown-clock[data-target-date]').forEach((el) => {
-      const dateIso = el.getAttribute('data-target-date');
-      const cd = calculateCountdown(dateIso);
-      if (cd) {
-        if (cd.expired) {
-          el.className = 'countdown-clock approaching';
-          el.textContent = 'Monitoring Window Active';
-        } else {
-          el.textContent = cd.text;
-          if (cd.days <= 3) el.classList.add('urgent');
-        }
-      }
-    });
-  }, 1000);
+function initEventStream() {
+  if (!('EventSource' in window)) return;
+  const es = new EventSource('/api/events');
+  const engineDot = document.getElementById('enginePulseDot');
+
+  es.addEventListener('connected', () => {
+    if (engineDot) {
+      engineDot.style.background = '#10b981';
+      engineDot.title = 'Real-time event stream connected';
+    }
+  });
+
+  const reloadOverview = () => {
+    fetchOverview();
+  };
+
+  es.addEventListener('watch:created', reloadOverview);
+  es.addEventListener('watch:updated', reloadOverview);
+  es.addEventListener('watch:deleted', reloadOverview);
+  es.addEventListener('watch:checked', reloadOverview);
+  es.addEventListener('resolution:completed', reloadOverview);
+  es.addEventListener('notification:created', reloadOverview);
+  es.addEventListener('notification:updated', reloadOverview);
+  es.addEventListener('channel:updated', reloadOverview);
+
+  es.onerror = () => {
+    if (engineDot) {
+      engineDot.style.background = '#eab308';
+      engineDot.title = 'Reconnecting event stream...';
+    }
+  };
 }
 
 function setupFilterTabs() {
@@ -711,8 +973,10 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Service worker registration error:', err);
     });
   }
-  fetchOverview();
+  setupEventDelegation();
   setupFilterTabs();
   setupModals();
   startLivingTimers();
+  initEventStream();
+  fetchOverview();
 });

@@ -61,11 +61,33 @@ export class NotificationRepository {
         auth: '',
         vapid_public_key: newKeys.publicKey,
         vapid_private_key: newKeys.privateKey,
-        vapid_subject: process.env.VAPID_SUBJECT || 'mailto:alerts@pulseremind.ai'
+        vapid_subject: process.env.VAPID_SUBJECT || 'mailto:push-ops@pulseremind.ai'
       },
       DEFAULT_TENANT_ID
     );
     return newKeys;
+  }
+
+  deactivateWebPushSubscription(endpoint?: string, tenantId = DEFAULT_TENANT_ID): boolean {
+    const row = db
+      .prepare('SELECT config_json FROM channel_configs WHERE channel = ? AND tenant_id = ?')
+      .get('web_push', tenantId) as { config_json: string } | undefined;
+    if (!row) return false;
+    try {
+      const cfg = JSON.parse(row.config_json || '{}');
+      if (!endpoint || cfg.endpoint === endpoint) {
+        cfg.endpoint = '';
+        cfg.p256dh = '';
+        cfg.auth = '';
+        db.prepare(`
+          UPDATE channel_configs
+          SET enabled = 0, config_json = ?, updated_at = ?
+          WHERE channel = ? AND tenant_id = ?
+        `).run(JSON.stringify(cfg), new Date().toISOString(), 'web_push', tenantId);
+        return true;
+      }
+    } catch {}
+    return false;
   }
 
   seedDefaultChannels(tenantId = DEFAULT_TENANT_ID): void {
