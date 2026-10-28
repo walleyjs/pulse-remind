@@ -338,7 +338,7 @@ export class WatchRepository {
       .prepare(`
         SELECT * FROM watches
         WHERE is_auto_resolve = 1
-          AND status IN ('active_monitoring', 'hibernating')
+          AND status IN ('active_monitoring', 'hibernating', 'exponential_approach', 'active_sampling')
           AND poll_after <= ?
         ORDER BY poll_after ASC
       `)

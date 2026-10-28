@@ -64,6 +64,10 @@ export class NotificationService {
     return this.repo.setSavedDefaultEmail(email, tenantId);
   }
 
+  getVapidPublicKey(): string {
+    return this.repo.getServerVapidKeys().publicKey;
+  }
+
   getRenderedEmailHtml(notificationId: string): string | null {
     return this.email.getRenderedHtml(notificationId);
   }
@@ -230,7 +234,8 @@ export class NotificationService {
         channel,
         channelCfg,
         subject,
-        plainMessage
+        plainMessage,
+        evaluation.detectedApplyUrl || watch.target_url
       );
 
       const nextRetryAt =

@@ -2386,6 +2386,124 @@ test('30. Unified /api/overview Multi-Tenant Viewport & Cross-Session Vault Rest
   watchService.deleteWatch(currentWatch.id);
 });
 
+test('31. Full-stack W3C Web Push registration, VAPID key handshake, and canary multi-channel dispatch', async () => {
+  const { Readable } = await import('node:stream');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const server = createAppServer();
+  const testTenant = 'tenant_push_test_' + Date.now();
+
+  const dispatch = async (opts: { method: string; url: string; body?: unknown; headers?: Record<string, string> }) => {
+    return new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
+      const req = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : []) as any;
+      req.method = opts.method;
+      req.url = opts.url;
+      req.headers = {
+        host: 'localhost:3000',
+        'content-type': 'application/json',
+        cookie: `prm_session=${testTenant}`,
+        ...(opts.headers || {})
+      };
+
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const output = Buffer.concat(chunks).toString('utf-8');
+          resolve({
+            status: statusCode,
+            json: () => (output ? JSON.parse(output) : {})
+          });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+
+      server.emit('request', req, res);
+    });
+  };
+
+  // 31a. VAPID Public Key Endpoint
+  const vapidRes = await dispatch({ method: 'GET', url: '/api/push/vapid-public-key' });
+  assert.equal(vapidRes.status, 200);
+  const { publicKey } = vapidRes.json();
+  assert.ok(publicKey && typeof publicKey === 'string', 'Must return valid VAPID public key');
+  assert.ok(publicKey.length > 40, 'VAPID public key must be valid length');
+
+  // 31b. Web Push Channel Registration
+  const mockSubscription = {
+    endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/mock_endpoint_token_123',
+    keys: {
+      p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM',
+      auth: 'tBHItJI5svbpez7KI4CCXg'
+    }
+  };
+
+  const regRes = await dispatch({
+    method: 'POST',
+    url: '/api/channels/web_push',
+    body: { subscription: mockSubscription }
+  });
+  assert.equal(regRes.status, 200);
+  assert.equal(regRes.json().success, true);
+  assert.equal(Boolean(regRes.json().channel.enabled), true);
+  assert.equal(regRes.json().channel.config.endpoint, mockSubscription.endpoint);
+
+  // 31c. Canary Multi-Channel Delivery Trigger
+  const testAlertRes = await dispatch({
+    method: 'POST',
+    url: '/api/channels/test',
+    body: { recipient: 'devwalley@gmail.com' }
+  });
+  assert.equal(testAlertRes.status, 200);
+  assert.equal(testAlertRes.json().success, true);
+  assert.ok(testAlertRes.json().count >= 1, 'At least 1 canary notification must be dispatched');
+
+  // 31d. Watch status inclusion for approaching states
+  const approachWatch = watchService.createWatch({
+    title: 'Approaching Deadline Scholarship',
+    category: 'scholarship',
+    chat_context: 'Testing approaching deadline inclusion in resolution engine',
+    source_chat_client: 'Unit Test',
+    target_url: 'http://localhost:3000/demo/scholarships/global-ai-fellowship',
+    trigger_type: 'web_monitor',
+    condition_text: 'Open',
+    window_start_date: '2026-10-28',
+    check_interval_minutes: 15
+  }, testTenant);
+
+  // Manually update status to exponential_approach
+  watchService.updateWatchFields(approachWatch.id, {
+    status: 'exponential_approach',
+    poll_after: Math.floor(Date.now() / 1000) - 10
+  });
+
+  const readyWatches = watchService.listWatches('all', testTenant);
+  assert.ok(readyWatches.some((w) => w.id === approachWatch.id));
+
+  // Run immediate watch check via endpoint
+  const checkRes = await dispatch({
+    method: 'POST',
+    url: `/api/watches/${approachWatch.id}/check`
+  });
+  assert.equal(checkRes.status, 200);
+  assert.ok(checkRes.json().watch, 'Check response must include evaluated watch');
+
+  // Clean up
+  watchService.deleteWatch(approachWatch.id);
+});
+
+
 
 
 

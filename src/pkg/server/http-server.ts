@@ -842,7 +842,8 @@ export function createAppServer(): http.Server {
       const watchCheckMatch = pathname.match(/^\/api\/watches\/([^/]+)\/check$/);
       if (watchCheckMatch && req.method === 'POST') {
         const watchId = watchCheckMatch[1];
-        const outcome = await resolutionEngine.runWatchCheck(watchId);
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const outcome = await resolutionEngine.runWatchCheck(watchId, { bypassCache: true, tenantId });
         if (!outcome) {
           sendJson(res, 404, { error: 'Watch not found' });
           return;
@@ -977,24 +978,78 @@ export function createAppServer(): http.Server {
         return;
       }
 
+      if (pathname === '/api/push/vapid-public-key' && req.method === 'GET') {
+        const publicKey = notificationService.getVapidPublicKey();
+        sendJson(res, 200, { publicKey });
+        return;
+      }
+
+      if (pathname === '/api/channels/web_push' && req.method === 'POST') {
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const body = await readJsonBody(req);
+        const sub = (body.subscription || body) as {
+          endpoint?: string;
+          keys?: { p256dh?: string; auth?: string };
+        };
+        const endpoint = String(sub.endpoint || '');
+        const p256dh = String(sub.keys?.p256dh || '');
+        const auth = String(sub.keys?.auth || '');
+        if (!endpoint || !p256dh || !auth) {
+          sendJson(res, 400, { error: 'Invalid PushSubscription: endpoint, p256dh, and auth are required.' });
+          return;
+        }
+        const updated = notificationService.updateChannelConfig(
+          'web_push',
+          true,
+          {
+            endpoint,
+            p256dh,
+            auth,
+            vapid_public_key: notificationService.getVapidPublicKey()
+          },
+          tenantId
+        );
+        sendJson(res, 200, { success: true, channel: updated });
+        return;
+      }
+
       if (pathname === '/api/channels' && req.method === 'POST') {
+        const { tenantId } = extractTenantId(req.headers, parsedUrl.searchParams);
         const body = await readJsonBody(req);
         const channel = body.channel as NotificationChannelType;
         const enabled = Boolean(body.enabled);
         const configObj = (body.config as Record<string, string>) || {};
-        const updated = notificationService.updateChannelConfig(channel, enabled, configObj);
+        const updated = notificationService.updateChannelConfig(channel, enabled, configObj, tenantId);
         sendJson(res, 200, { channel: updated });
         return;
       }
 
       if (pathname === '/api/channels/test' && req.method === 'POST') {
-        const watches = watchService.listWatches();
-        const sampleWatch: WatchRecord = watches[0] || {
+        const { tenantId, userEmail, isExplicitTenant } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const body = await readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+        let recipientEmail = (typeof body.recipient === 'string' ? body.recipient : userEmail) || '';
+        if (!recipientEmail && isExplicitTenant) {
+          const saved = notificationService.getSavedDefaultEmail(tenantId);
+          if (saved && !isDisallowedAmbientEmail(saved)) {
+            recipientEmail = saved;
+          }
+        }
+        if (!recipientEmail) {
+          const globalDefault = notificationService.getSavedDefaultEmail();
+          if (globalDefault && !isDisallowedAmbientEmail(globalDefault)) {
+            recipientEmail = globalDefault;
+          }
+        }
+
+        const requestedChannel = typeof body.channel === 'string' ? (body.channel as NotificationChannelType) : undefined;
+        const watches = watchService.listWatches('all', tenantId, recipientEmail || undefined);
+        const baseWatch: WatchRecord = watches[0] || {
           id: 'watch_test',
+          tenant_id: tenantId,
           title: 'Global AI & STEM Graduate Scholarship 2027',
           category: 'scholarship',
           chat_context: 'Test notification from PulseRemind Channel Settings.',
-          source_chat_client: 'PulseRemind Test',
+          source_chat_client: 'PulseRemind Canary Test',
           target_url: `${baseUrl}/demo/scholarships/global-ai-fellowship`,
           secondary_url: null,
           trigger_type: 'web_monitor',
@@ -1019,28 +1074,35 @@ export function createAppServer(): http.Server {
           },
           oracle_responses: [],
           status: 'triggered_open',
-          notify_channels: ['in_app', 'email'],
-          recipient_email: notificationService.getSavedDefaultEmail(tenantId) || 'alerts@pulseremind.ai',
+          notify_channels: requestedChannel ? [requestedChannel] : ['in_app', 'email', 'web_push'],
+          recipient_email: recipientEmail || undefined,
           last_checked_at: new Date().toISOString(),
           last_snapshot_hash: null,
-          last_status_summary: 'Test dispatch',
+          last_status_summary: 'Canary test dispatch',
           detected_deadline: 'January 15, 2027',
           detected_apply_url: `${baseUrl}/demo/scholarships/global-ai-fellowship/apply`,
           triggered_at: new Date().toISOString(),
           created_at: new Date().toISOString()
         };
 
+        const testWatch: WatchRecord = {
+          ...baseWatch,
+          tenant_id: tenantId,
+          recipient_email: recipientEmail || baseWatch.recipient_email,
+          notify_channels: requestedChannel ? [requestedChannel] : baseWatch.notify_channels
+        };
+
         const sent = await notificationService.dispatchOpenNotifications(
-          sampleWatch,
+          testWatch,
           {
             httpStatus: 200,
             isOpen: true,
             outcome: 1,
             confidence: 0.99,
-            summary: 'Test notification triggered manually from Channel Settings.',
+            summary: 'Canary test alert triggered to verify delivery on your active devices.',
             extractedSnippet:
               'Applications for the 2027 cohort are NOW OPEN! Apply online before January 15, 2027.',
-            snapshotHash: 'test_hash',
+            snapshotHash: 'canary_hash_' + Date.now(),
             pageChanged: true,
             detectedDeadline: 'January 15, 2027',
             detectedOpenDate: 'End of October 2026',
@@ -1052,7 +1114,7 @@ export function createAppServer(): http.Server {
           { allowDuplicateTest: true }
         );
 
-        sendJson(res, 200, { dispatched: sent });
+        sendJson(res, 200, { success: true, count: sent.length, dispatched: sent });
         return;
       }
 

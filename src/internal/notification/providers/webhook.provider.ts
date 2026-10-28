@@ -4,6 +4,7 @@ import {
   encryptWebPushPayload,
   generateVapidKeys
 } from '../../../pkg/webpush/crypto.ts';
+import { notificationRepository } from '../repository.ts';
 
 export interface WebhookDispatchResult {
   deliveryStatus: 'delivered' | 'simulated' | 'failed';
@@ -31,7 +32,8 @@ export class MessagingWebhookProvider {
     channel: NotificationChannelType,
     channelCfg: ChannelConfigRecord | undefined,
     subject: string,
-    plainMessage: string
+    plainMessage: string,
+    clickUrl?: string | null
   ): Promise<WebhookDispatchResult> {
     let deliveryStatus: 'delivered' | 'simulated' | 'failed' = 'simulated';
     let recipientLabel = `${channel.toUpperCase()} Webhook`;
@@ -45,17 +47,18 @@ export class MessagingWebhookProvider {
         const auth = channelCfg?.config?.auth || '';
         if (endpoint && p256dh && auth) {
           recipientLabel = `Web Push Service Worker (${new URL(endpoint).host})`;
+          const serverVapid = notificationRepository.getServerVapidKeys();
           const vapidKeys =
             channelCfg?.config?.vapid_public_key && channelCfg?.config?.vapid_private_key
               ? {
                   publicKey: channelCfg.config.vapid_public_key,
                   privateKey: channelCfg.config.vapid_private_key
                 }
-              : generateVapidKeys();
+              : serverVapid;
           const vapidSubject = channelCfg?.config?.vapid_subject || 'mailto:alerts@pulseremind.ai';
           const vapid = buildVapidAuthHeader(endpoint, vapidSubject, vapidKeys);
           const encrypted = encryptWebPushPayload(
-            JSON.stringify({ title: subject, body: plainMessage }),
+            JSON.stringify({ title: subject, body: plainMessage, url: clickUrl || '/' }),
             { p256dh, auth }
           );
 

@@ -78,7 +78,10 @@
             <div class="panel-heading-group">
               <h2 id="deliveryHeading" class="panel-title-secondary">Delivery Channels</h2>
             </div>
-            <button type="button" class="btn-text" id="browserPushQuickBtn">Enable Push</button>
+            <div style="display: flex; gap: 8px;">
+              <button type="button" class="btn-text" id="testChannelsBtn" title="Dispatch synthetic canary alert to all active destinations">Test Alert</button>
+              <button type="button" class="btn-text" id="browserPushQuickBtn">Enable Push</button>
+            </div>
           </div>
           <div id="channelsConfigContainer" class="channels-list">
             <!-- Populated dynamically by app.js -->

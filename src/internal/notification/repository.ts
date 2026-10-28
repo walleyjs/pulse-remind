@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { db, runInTransaction } from '../../pkg/db/sqlite.ts';
 import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
 import { enqueueOutbox } from '../../pkg/db/outbox.ts';
-import { generateVapidKeys } from '../../pkg/webpush/crypto.ts';
+import { generateVapidKeys, type VapidKeyPair } from '../../pkg/webpush/crypto.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
 import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
 import type { ChannelConfigRecord, NotificationChannelType, NotificationRecord } from './model.ts';
@@ -30,9 +30,47 @@ function mapNotificationRow(r: Record<string, unknown>): NotificationRecord {
 }
 
 export class NotificationRepository {
+  getServerVapidKeys(): VapidKeyPair {
+    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+      return {
+        publicKey: process.env.VAPID_PUBLIC_KEY,
+        privateKey: process.env.VAPID_PRIVATE_KEY
+      };
+    }
+    const row = db
+      .prepare('SELECT config_json FROM channel_configs WHERE channel = ? AND tenant_id = ?')
+      .get('web_push', DEFAULT_TENANT_ID) as { config_json: string } | undefined;
+    if (row) {
+      try {
+        const cfg = JSON.parse(row.config_json || '{}');
+        if (cfg.vapid_public_key && cfg.vapid_private_key) {
+          return {
+            publicKey: cfg.vapid_public_key,
+            privateKey: cfg.vapid_private_key
+          };
+        }
+      } catch {}
+    }
+    const newKeys = generateVapidKeys();
+    this.updateChannelConfig(
+      'web_push',
+      false,
+      {
+        endpoint: '',
+        p256dh: '',
+        auth: '',
+        vapid_public_key: newKeys.publicKey,
+        vapid_private_key: newKeys.privateKey,
+        vapid_subject: process.env.VAPID_SUBJECT || 'mailto:alerts@pulseremind.ai'
+      },
+      DEFAULT_TENANT_ID
+    );
+    return newKeys;
+  }
+
   seedDefaultChannels(tenantId = DEFAULT_TENANT_ID): void {
     const now = new Date().toISOString();
-    const vapid = generateVapidKeys();
+    const vapid = this.getServerVapidKeys();
     const defaultChannels: Array<{
       channel: NotificationChannelType;
       enabled: number;

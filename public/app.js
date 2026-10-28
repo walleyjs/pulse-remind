@@ -38,12 +38,28 @@ function formatTime(iso) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function calculateCountdown(targetDateIso) {
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function calculateCountdown(targetDateIso, isTriggered = false) {
   if (!targetDateIso) return null;
   const target = new Date(targetDateIso).getTime();
   if (isNaN(target)) return null;
   const diffMs = target - Date.now();
-  if (diffMs <= 0) return { expired: true, text: 'Trigger Window Active' };
+  if (diffMs <= 0) {
+    if (isTriggered) {
+      return { expired: true, isTriggered: true, text: 'Triggered · Portal Open' };
+    }
+    return { expired: true, isTriggered: false, text: 'Monitoring Window Active' };
+  }
 
   const totalSec = Math.floor(diffMs / 1000);
   const days = Math.floor(totalSec / 86400);
@@ -198,13 +214,15 @@ function renderWatches() {
       const catLabel = getCategoryLabel(w.category);
       const phaseBadge = getTemporalPhaseBadge(w);
       const targetDate = w.window_start_date || w.detected_deadline;
-      const countdown = calculateCountdown(targetDate);
+      const isTriggered = w.status === 'triggered_open';
+      const countdown = calculateCountdown(targetDate, isTriggered);
       const domain = extractDomain(w.target_url);
 
       let countdownHtml = '';
       if (countdown) {
         if (countdown.expired) {
-          countdownHtml = `<span class="countdown-clock live">${escapeHtml(countdown.text)}</span>`;
+          const badgeClass = countdown.isTriggered ? 'countdown-clock live' : 'countdown-clock approaching';
+          countdownHtml = `<span class="${badgeClass}">${escapeHtml(countdown.text)}</span>`;
         } else {
           const isUrgent = countdown.days <= 3;
           countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
@@ -450,6 +468,13 @@ function renderChannels() {
     })
     .join('');
 
+  const webPushConfig = channels.find((c) => c.channel === 'web_push');
+  const pushBtn = document.getElementById('browserPushQuickBtn');
+  if (pushBtn && webPushConfig?.enabled) {
+    pushBtn.textContent = 'Push Active ✓';
+    pushBtn.style.color = '#10b981';
+  }
+
   container.querySelectorAll('input[data-channel]').forEach((chk) => {
     chk.addEventListener('change', async () => {
       const channel = chk.getAttribute('data-channel');
@@ -472,8 +497,8 @@ function startLivingTimers() {
       const cd = calculateCountdown(dateIso);
       if (cd) {
         if (cd.expired) {
-          el.className = 'countdown-clock live';
-          el.textContent = 'Trigger Window Active';
+          el.className = 'countdown-clock approaching';
+          el.textContent = 'Monitoring Window Active';
         } else {
           el.textContent = cd.text;
           if (cd.days <= 3) el.classList.add('urgent');
@@ -587,15 +612,90 @@ function setupModals() {
     await fetchOverview();
   });
 
-  // Browser Push Activation
-  document.getElementById('browserPushQuickBtn')?.addEventListener('click', async () => {
-    if (!('Notification' in window)) {
-      alert('Browser notifications are not supported in this browser.');
+  // Full-Stack W3C Web Push Activation
+  const pushBtn = document.getElementById('browserPushQuickBtn');
+  pushBtn?.addEventListener('click', async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      alert('W3C Web Push is not supported in this browser environment.');
       return;
     }
-    const perm = await Notification.requestPermission();
-    if (perm === 'granted') {
-      alert('Browser Push Notifications enabled');
+    const originalText = pushBtn.textContent;
+    try {
+      pushBtn.textContent = 'Enabling...';
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        alert('Notification permission was not granted. Please allow notifications in your browser settings.');
+        pushBtn.textContent = originalText;
+        return;
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+      const res = await fetch('/api/push/vapid-public-key');
+      if (!res.ok) throw new Error('Failed to fetch VAPID key from server');
+      const { publicKey } = await res.json();
+      const appServerKey = urlBase64ToUint8Array(publicKey);
+
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: appServerKey
+        });
+      }
+
+      const subJson = sub.toJSON();
+      const saveRes = await fetch('/api/channels/web_push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription: {
+            endpoint: subJson.endpoint,
+            keys: {
+              p256dh: subJson.keys?.p256dh,
+              auth: subJson.keys?.auth
+            }
+          }
+        })
+      });
+
+      if (saveRes.ok) {
+        pushBtn.textContent = 'Push Active ✓';
+        pushBtn.style.color = '#10b981';
+        await fetchOverview();
+      } else {
+        throw new Error('Failed to register subscription on server');
+      }
+    } catch (err) {
+      console.error('Web Push registration error:', err);
+      alert('Could not enable Web Push: ' + (err.message || err));
+      pushBtn.textContent = originalText;
+    }
+  });
+
+  // Canary Multi-Channel Delivery Test Trigger
+  const testBtn = document.getElementById('testChannelsBtn');
+  testBtn?.addEventListener('click', async () => {
+    const originalText = testBtn.textContent;
+    testBtn.textContent = 'Sending...';
+    try {
+      const res = await fetch('/api/channels/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (res.ok) {
+        testBtn.textContent = 'Sent ✓';
+        setTimeout(() => { testBtn.textContent = originalText; }, 3000);
+        await fetchOverview();
+      } else {
+        alert('Canary dispatch failed: ' + (data.error || 'Server error'));
+        testBtn.textContent = originalText;
+      }
+    } catch (err) {
+      console.error('Test dispatch error:', err);
+      alert('Failed to trigger canary alert: ' + (err.message || err));
+      testBtn.textContent = originalText;
     }
   });
 
@@ -606,6 +706,11 @@ function setupModals() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('Service worker registration error:', err);
+    });
+  }
   fetchOverview();
   setupFilterTabs();
   setupModals();
