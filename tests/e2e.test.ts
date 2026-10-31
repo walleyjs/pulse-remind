@@ -2748,6 +2748,81 @@ test('34. Temporal Commerce Predicate Engine: Price Drops, Wilson Score Rating Q
   );
 });
 
+test('35. Full-Stack Commerce Watch Lifecycle: NL Extraction, SQLite Persistence, Multi-Poll Hysteresis, and Outbox Dispatch', async () => {
+  const { chatExtractorService } = await import('../src/internal/extractor/service.ts');
+  const { watchService } = await import('../src/internal/watch/service.ts');
+  const { resolutionEngine } = await import('../src/internal/resolution/engine.ts');
+  const baseUrl = 'http://localhost:3456';
+
+  // 1. Deterministic Natural-Language Commerce Extraction
+  const nlPrompt =
+    'Alert me when the Apple MacBook Pro M4 Max drops under $1,600 (was $1,999, at least 20% off) with 85% rating confidence and promo code SAVE20';
+  const extractedList = chatExtractorService.extractWatchesFromTranscript(nlPrompt, baseUrl);
+  assert.equal(extractedList.length, 1);
+  const item = extractedList[0];
+  assert.equal(item.category, 'deal_or_promo');
+  assert.ok(item.commerce_predicate, 'Must extract structured commerce_predicate from NL prompt');
+  assert.equal(item.commerce_predicate?.targetPrice, 1600);
+  assert.equal(item.commerce_predicate?.referencePrice, 1999);
+  assert.equal(item.commerce_predicate?.maxDropPercentage, 20);
+  assert.equal(item.commerce_predicate?.minRatingConfidence, 0.85);
+  assert.equal(item.commerce_predicate?.requiredPromoCode, 'SAVE20');
+
+  // 2. Create watch pointing at /demo/deal-portal initially overpriced ($1,799) & unverified 1-review shill rating
+  const watchInput = chatExtractorService.toWatchInput(item);
+  watchInput.target_url = `${baseUrl}/demo/deal-portal?price=1799&list_price=1999&rating=5.0&reviews=1&promo=NONE`;
+  const created = watchService.createWatch(watchInput, 'tenant_commerce_e2e');
+
+  assert.equal(created.category, 'deal_or_promo');
+  assert.equal(created.resolution_config.dynamic_condition, 'commerce_threshold');
+  assert.equal(created.commerce_predicate?.targetPrice, 1600);
+
+  // 3. Poll 1: Price is $1,799 (> $1,600) and reviews = 1 (Wilson score 0.2065 < 0.85) -> Must NOT trigger
+  const poll1 = await resolutionEngine.runWatchCheck(created.id, {
+    bypassCache: true,
+    tenantId: 'tenant_commerce_e2e'
+  });
+  assert.ok(poll1);
+  assert.equal(poll1.evaluation.isOpen, false);
+  assert.equal(poll1.newlyTriggered, false);
+  assert.equal(poll1.watch.last_commerce_state?.satisfied, false);
+  assert.equal(poll1.watch.last_commerce_state?.extracted.currentPrice, 1799);
+  assert.equal(poll1.watch.resolution_config.provider_metadata.historical_low_price, '1799');
+
+  // 4. Poll 2: Portal drops to $1,499 (<= $1,600, 25% off $1,999), 4.8★ across 420 reviews (Wilson 0.9163 >= 0.85), promo SAVE20 valid
+  watchService.updateWatchFields(
+    created.id,
+    {
+      target_url: `${baseUrl}/demo/deal-portal?price=1499&list_price=1999&rating=4.8&reviews=420&promo=SAVE20`
+    },
+    'tenant_commerce_e2e'
+  );
+
+  const poll2 = await resolutionEngine.runWatchCheck(created.id, {
+    bypassCache: true,
+    tenantId: 'tenant_commerce_e2e'
+  });
+  assert.ok(poll2);
+  assert.equal(poll2.evaluation.isOpen, true);
+  assert.equal(poll2.newlyTriggered, true);
+  assert.equal(poll2.watch.status, 'triggered_open');
+  assert.equal(poll2.watch.last_commerce_state?.satisfied, true);
+  assert.equal(poll2.watch.last_commerce_state?.extracted.currentPrice, 1499);
+  assert.equal(poll2.watch.last_commerce_state?.savingsAmount, 500);
+  assert.equal(poll2.watch.last_commerce_state?.effectiveDropPercentage, 25);
+  assert.equal(poll2.watch.resolution_config.provider_metadata.historical_low_price, '1499');
+  assert.ok(
+    poll2.notificationsDispatched.length > 0,
+    'Must dispatch transactional notification upon verified price/rating/promo threshold crossing'
+  );
+  assert.ok(
+    poll2.evaluation.summary.includes('DEAL / PRICE TARGET MET') &&
+      poll2.evaluation.summary.includes('Wilson confidence score'),
+    `Summary must include deal verification and Wilson score, got: ${poll2.evaluation.summary}`
+  );
+});
+
+
 
 
 

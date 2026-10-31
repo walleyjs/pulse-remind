@@ -12,11 +12,14 @@ export interface PricePredicateConfig {
   targetPrice?: number;
   currency?: string;
   maxDropPercentage?: number; // e.g. 20 for 20% off reference
+  minDropPercentage?: number; // alias for maxDropPercentage
   referencePrice?: number;
   minRatingConfidence?: number; // Wilson score lower bound [0.0 - 1.0]
   minReviewCount?: number;
   requiredPromoCode?: string;
 }
+
+export type CommercePredicateConfig = PricePredicateConfig;
 
 export interface ExtractedCommerceState {
   currentPrice: number | null;
@@ -41,6 +44,8 @@ export interface PredicateEvaluationResult {
   effectiveDropPercentage: number | null;
   savingsAmount: number | null;
 }
+
+export type CommerceEvaluationResult = PredicateEvaluationResult;
 
 /**
  * Calculates the Wilson Score Lower Bound for binomial proportions / ratings.
@@ -79,7 +84,10 @@ export function calculateWilsonRatingConfidence(
 /**
  * Extracts structured commerce state from HTML using Schema.org JSON-LD and SSR __NEXT_DATA__.
  */
-export function extractStructuredCommerceState(rawHtml: string): ExtractedCommerceState {
+export function extractStructuredCommerceState(
+  rawHtml: string,
+  requiredPromoCode?: string
+): ExtractedCommerceState {
   const result: ExtractedCommerceState = {
     currentPrice: null,
     listPrice: null,
@@ -132,6 +140,10 @@ export function extractStructuredCommerceState(rawHtml: string): ExtractedCommer
             const p = typeof rawPrice === 'number' ? rawPrice : parseFloat(String(rawPrice).replace(/[^0-9.]/g, ''));
             if (!isNaN(p)) {
               result.currentPrice = p;
+              if (obj.highPrice !== undefined || obj.listPrice !== undefined) {
+                const lp = parseFloat(String(obj.highPrice ?? obj.listPrice).replace(/[^0-9.]/g, ''));
+                if (!isNaN(lp)) result.listPrice = lp;
+              }
               result.currency = obj.priceCurrency || obj.priceSpecification?.priceCurrency || result.currency;
               result.priceValidUntil = obj.priceValidUntil || null;
               if (obj.seller?.name) result.sellerName = String(obj.seller.name);
@@ -162,6 +174,7 @@ export function extractStructuredCommerceState(rawHtml: string): ExtractedCommer
               result.currentPrice = price;
               result.listPrice = parseFloat(candidateProduct.listPrice || candidateProduct.msrp || candidateProduct.originalPrice) || null;
               result.currency = candidateProduct.currency || 'USD';
+              result.availability = candidateProduct.inStock === false ? 'OutOfStock' : 'InStock';
               result.source = 'next_data';
               if (candidateProduct.rating) {
                 result.rawRatingValue = parseFloat(candidateProduct.rating);
@@ -176,6 +189,13 @@ export function extractStructuredCommerceState(rawHtml: string): ExtractedCommer
         }
       } catch {}
     }
+  }
+
+  // 3. Optional Promo Code verification against page HTML
+  if (requiredPromoCode) {
+    const promoRes = validatePromoCodeToken(requiredPromoCode, rawHtml);
+    result.promoCodeVerified = promoRes.valid;
+    result.detectedPromoDiscount = promoRes.valid ? promoRes.discountPercentage : null;
   }
 
   return result;
@@ -305,24 +325,25 @@ export function evaluateCommercePredicate(
   let effectiveDropPercentage: number | null = null;
   let savingsAmount: number | null = null;
   const refPrice = config.referencePrice ?? extracted.listPrice;
+  const requiredDropPct = config.maxDropPercentage ?? config.minDropPercentage;
 
   if (refPrice && refPrice > extracted.currentPrice) {
     savingsAmount = Number((refPrice - extracted.currentPrice).toFixed(2));
     effectiveDropPercentage = Number((((refPrice - extracted.currentPrice) / refPrice) * 100).toFixed(1));
 
-    if (config.maxDropPercentage !== undefined && config.maxDropPercentage !== null) {
-      if (effectiveDropPercentage >= config.maxDropPercentage) {
+    if (requiredDropPct !== undefined && requiredDropPct !== null) {
+      if (effectiveDropPercentage >= requiredDropPct) {
         reasons.push(
-          `Price drop of ${effectiveDropPercentage}% exceeds requested threshold of ${config.maxDropPercentage}% (Saved ${extracted.currency || '$'}${savingsAmount})`
+          `Price drop of ${effectiveDropPercentage}% exceeds requested threshold of ${requiredDropPct}% (Saved ${extracted.currency || '$'}${savingsAmount})`
         );
       } else {
         satisfied = false;
         reasons.push(
-          `Price drop of ${effectiveDropPercentage}% is below minimum required ${config.maxDropPercentage}%`
+          `Price drop of ${effectiveDropPercentage}% is below minimum required ${requiredDropPct}%`
         );
       }
     }
-  } else if (config.maxDropPercentage !== undefined && config.maxDropPercentage !== null) {
+  } else if (requiredDropPct !== undefined && requiredDropPct !== null) {
     satisfied = false;
     reasons.push('No reference or list price available to verify percentage drop');
   }
@@ -366,4 +387,107 @@ export function evaluateCommercePredicate(
     effectiveDropPercentage,
     savingsAmount
   };
+}
+
+/**
+ * Deterministically extracts numeric price-drop, percentage-discount, Wilson rating confidence,
+ * and promo-code constraints from natural language prompts or condition text.
+ */
+export function extractCommercePredicateFromText(text: string): PricePredicateConfig | null {
+  if (!text || !text.trim()) return null;
+
+  const config: PricePredicateConfig = {};
+  let matchedAny = false;
+
+  // 1. Target price: "under $1,500", "below $1600", "<= $299.99", "drops to $1200"
+  const targetPriceMatch = text.match(
+    /(?:under|below|less\s+than|at\s+or\s+below|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?(?:\s+of)?)\s*(?:(\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i
+  );
+  if (targetPriceMatch) {
+    const rawCurrency = (targetPriceMatch[1] || '$').toUpperCase();
+    const val = parseFloat(targetPriceMatch[2].replace(/,/g, ''));
+    if (!isNaN(val) && val > 0) {
+      config.targetPrice = val;
+      config.currency =
+        rawCurrency === '€' || rawCurrency === 'EUR'
+          ? 'EUR'
+          : rawCurrency === '£' || rawCurrency === 'GBP'
+            ? 'GBP'
+            : 'USD';
+      matchedAny = true;
+    }
+  }
+
+  // 2. Reference / MSRP price: "(was $1,999)", "from $2000", "reference price $3,499", "msrp $999"
+  const refPriceMatch = text.match(
+    /(?:was|from|msrp|list\s+price|reference\s+price)\s*(?:\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i
+  );
+  if (refPriceMatch) {
+    const val = parseFloat(refPriceMatch[1].replace(/,/g, ''));
+    if (!isNaN(val) && val > 0) {
+      config.referencePrice = val;
+      matchedAny = true;
+    }
+  }
+
+  // 3. Percentage drop: "at least 20% off", "25% discount", "drop of 15%"
+  const dropPctMatch = text.match(
+    /(?:at\s+least\s+|minimum\s+|drop\s+of\s+)?([0-9]{1,2}(?:\.[0-9]+)?)\s*%\s*(?:off|discount|drop|savings)/i
+  );
+  if (dropPctMatch) {
+    const pct = parseFloat(dropPctMatch[1]);
+    if (!isNaN(pct) && pct > 0 && pct < 100) {
+      config.maxDropPercentage = pct;
+      config.minDropPercentage = pct;
+      matchedAny = true;
+    }
+  }
+
+  // 4. Wilson rating confidence: "85% rating confidence", "min rating confidence 0.85", "wilson confidence 80%"
+  const wilsonMatch = text.match(
+    /(?:(?:wilson|rating)\s+confidence(?:\s+of|\s+at\s+least)?|([0-9]{1,2}(?:\.[0-9]+)?)\s*%\s+(?:wilson\s+|verified\s+)?rating\s+confidence)\s*([0-9.]+)?\s*(%)?/i
+  );
+  if (wilsonMatch) {
+    const rawNum = wilsonMatch[1] || wilsonMatch[2];
+    if (rawNum) {
+      let num = parseFloat(rawNum);
+      if (!isNaN(num) && num > 0) {
+        if (num > 1) num = num / 100;
+        config.minRatingConfidence = Number(num.toFixed(2));
+        matchedAny = true;
+      }
+    }
+  } else {
+    // Also support star floor: "4.5+ stars", "at least 4.6 stars" -> map to Wilson lower bound
+    const starMatch = text.match(/(?:at\s+least\s+|min(?:imum)?\s+)?([34](?:\.[0-9])?|5(?:\.0)?)\+?\s*(?:stars?|★)/i);
+    if (starMatch) {
+      const stars = parseFloat(starMatch[1]);
+      if (!isNaN(stars) && stars >= 3.0 && stars <= 5.0) {
+        config.minRatingConfidence = Number(calculateWilsonRatingConfidence(stars, 50, 5.0).toFixed(2));
+        matchedAny = true;
+      }
+    }
+  }
+
+  // 5. Minimum review count: "at least 100 reviews", "50+ reviews"
+  const reviewCountMatch = text.match(/(?:at\s+least\s+|min(?:imum)?\s+)?([0-9]+)\+?\s+reviews/i);
+  if (reviewCountMatch) {
+    const cnt = parseInt(reviewCountMatch[1], 10);
+    if (!isNaN(cnt) && cnt > 0) {
+      config.minReviewCount = cnt;
+      matchedAny = true;
+    }
+  }
+
+  // 6. Required promo code: "with promo code WELCOME12", "coupon code SAVE20", "with code TECH2026"
+  const promoMatch = text.match(/(?:with\s+)?(?:promo(?:\s+code)?|coupon(?:\s+code)?|voucher|code)\s+['"]?([A-Z0-9_\-]{3,24})['"]?/i);
+  if (promoMatch) {
+    const token = promoMatch[1].toUpperCase();
+    if (!['OPEN', 'CODE', 'VALID', 'ACTIVE', 'ONLY', 'WHEN', 'THAT'].includes(token)) {
+      config.requiredPromoCode = token;
+      matchedAny = true;
+    }
+  }
+
+  return matchedAny ? config : null;
 }

@@ -56,6 +56,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
             'tickets',
             'registration',
             'product_launch',
+            'deal_or_promo',
             'deadline',
             'reminder',
             'scholarship',
@@ -67,6 +68,19 @@ export const MCP_TOOLS: McpToolDefinition[] = [
             'general'
           ],
           description: 'Category of the event or reminder'
+        },
+        commerce_predicate: {
+          type: 'object',
+          description:
+            'Optional structured commerce threshold predicate for price-drop, rating-confidence, and promo-code monitoring.',
+          properties: {
+            targetPrice: { type: 'number', description: 'Target maximum price threshold' },
+            referencePrice: { type: 'number', description: 'Reference or MSRP price for drop % calculation' },
+            maxDropPercentage: { type: 'number', description: 'Minimum required percentage discount (e.g. 20)' },
+            minRatingConfidence: { type: 'number', description: 'Minimum Wilson score lower bound [0.0 - 1.0]' },
+            minReviewCount: { type: 'number', description: 'Minimum verified review count' },
+            requiredPromoCode: { type: 'string', description: 'Promo/coupon code token to verify' }
+          }
         },
         trigger_type: {
           type: 'string',
@@ -303,7 +317,11 @@ export async function executeMcpTool(
         notify_channels: Array.isArray(args.notify_channels)
           ? (args.notify_channels as NotificationChannelType[])
           : ['in_app', 'email'],
-        recipient_email: providedEmail
+        recipient_email: providedEmail,
+        commerce_predicate:
+          args.commerce_predicate && typeof args.commerce_predicate === 'object'
+            ? (args.commerce_predicate as Record<string, unknown>)
+            : undefined
       }, tenantId);
 
       const calendarLinks = buildWatchCalendarLinks(watch, baseUrl);

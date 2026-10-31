@@ -170,6 +170,58 @@ export function createAppServer(): http.Server {
         return;
       }
 
+      // 1b. Simulated External Commerce / Deal Portal Page (JSON-LD Offer + AggregateRating + Promo Token)
+      if (pathname === '/demo/deal-portal' && req.method === 'GET') {
+        const priceParam = parseFloat(parsedUrl.searchParams.get('price') || '1499.00');
+        const listPriceParam = parseFloat(parsedUrl.searchParams.get('list_price') || '1999.00');
+        const ratingParam = parseFloat(parsedUrl.searchParams.get('rating') || '4.8');
+        const reviewsParam = parseInt(parsedUrl.searchParams.get('reviews') || '420', 10);
+        const promoParam = (parsedUrl.searchParams.get('promo') || 'SAVE20').toUpperCase();
+        const stockParam = parsedUrl.searchParams.get('stock') === 'out' ? 'OutOfStock' : 'InStock';
+        const titleParam = parsedUrl.searchParams.get('title') || 'Apple MacBook Pro M4 Max 16-inch';
+
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${titleParam} — Official Deal Portal</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": ${JSON.stringify(titleParam)},
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "${ratingParam}",
+      "reviewCount": "${reviewsParam}",
+      "bestRating": "5"
+    },
+    "offers": {
+      "@type": "Offer",
+      "price": "${priceParam.toFixed(2)}",
+      "highPrice": "${listPriceParam.toFixed(2)}",
+      "priceCurrency": "USD",
+      "availability": "https://schema.org/${stockParam}",
+      "priceValidUntil": "2026-12-31",
+      "seller": {
+        "@type": "Organization",
+        "name": "Verified Direct Store"
+      }
+    }
+  }
+  </script>
+</head>
+<body style="font-family:sans-serif;max-width:680px;margin:48px auto;padding:24px;">
+  <h1>${titleParam}</h1>
+  <p>Current Price: <strong>USD ${priceParam.toFixed(2)}</strong> (List: USD ${listPriceParam.toFixed(2)})</p>
+  <p>Verified Rating: <strong>${ratingParam} ★</strong> (${reviewsParam} reviews)</p>
+  <p>Promo Status: Promo code '${promoParam}' gives 20% off at checkout.</p>
+</body>
+</html>`);
+        return;
+      }
+
       // 2. OpenAPI Spec for ChatGPT Actions & Gemini Function Declarations
       if (pathname === '/api/openapi.json' && req.method === 'GET') {
         sendJson(res, 200, buildOpenApiSpec(baseUrl));
@@ -834,14 +886,39 @@ export function createAppServer(): http.Server {
         );
         const resolved = resolveTimeframeWindow(timeframeText);
 
+        const rawCommercePred =
+          body.commerce_predicate && typeof body.commerce_predicate === 'object'
+            ? (body.commerce_predicate as Record<string, unknown>)
+            : {};
+        const explicitCommercePred: Record<string, unknown> = { ...rawCommercePred };
+        if (body.target_price !== undefined && body.target_price !== '') {
+          explicitCommercePred.targetPrice = Number(body.target_price);
+        }
+        if (body.reference_price !== undefined && body.reference_price !== '') {
+          explicitCommercePred.referencePrice = Number(body.reference_price);
+        }
+        if (body.max_drop_percentage !== undefined && body.max_drop_percentage !== '') {
+          explicitCommercePred.maxDropPercentage = Number(body.max_drop_percentage);
+        }
+        if (body.min_rating_confidence !== undefined && body.min_rating_confidence !== '') {
+          const val = Number(body.min_rating_confidence);
+          explicitCommercePred.minRatingConfidence = val > 1 ? val / 100 : val;
+        }
+        if (body.required_promo_code && String(body.required_promo_code).trim()) {
+          explicitCommercePred.requiredPromoCode = String(body.required_promo_code).trim().toUpperCase();
+        }
+        const hasExplicitCommerce = Object.keys(explicitCommercePred).length > 0;
+
         const watch = watchService.createWatch({
           title: String(body.title || 'New Opportunity Watch'),
-          category: String(body.category || 'scholarship'),
+          category: String(body.category || (hasExplicitCommerce ? 'deal_or_promo' : 'scholarship')),
           chat_context: String(body.chat_context || 'Planned during AI chat session.'),
           source_chat_client: String(body.source_chat_client || 'Web Dashboard / MCP'),
           target_url: body.target_url
             ? String(body.target_url)
-            : `${baseUrl}/demo/scholarships/global-ai-fellowship`,
+            : hasExplicitCommerce
+              ? `${baseUrl}/demo/deal-portal`
+              : `${baseUrl}/demo/scholarships/global-ai-fellowship`,
           secondary_url: body.secondary_url ? String(body.secondary_url) : null,
           trigger_type:
             (body.trigger_type as 'web_monitor' | 'scheduled_date' | 'hybrid') || 'web_monitor',
@@ -862,7 +939,8 @@ export function createAppServer(): http.Server {
             : ['in_app', 'email'],
           recipient_email: body.recipient_email && !isDisallowedAmbientEmail(String(body.recipient_email))
             ? String(body.recipient_email)
-            : undefined
+            : undefined,
+          commerce_predicate: hasExplicitCommerce ? explicitCommercePred : undefined
         }, tenantId);
 
         sendJson(res, 201, { watch });

@@ -110,6 +110,7 @@ function getCategoryLabel(cat) {
   switch (cat) {
     case 'tickets': return 'Tickets & Passes';
     case 'product_launch': return 'Product Drop';
+    case 'deal_or_promo': return 'Verified Deal';
     case 'regulatory_deadline': return 'Regulatory';
     case 'visa_slot': return 'Visa Appointment';
     case 'conference': return 'Conference';
@@ -118,6 +119,35 @@ function getCategoryLabel(cat) {
     case 'calendar_reminder': return 'Calendar Event';
     default: return 'Opportunity';
   }
+}
+
+function buildCommerceBadgesHtml(w) {
+  const pred = w.commerce_predicate;
+  const state = w.last_commerce_state;
+  if (!pred && !state) return '';
+
+  const pills = [];
+  if (pred?.targetPrice != null) {
+    pills.push(`<span class="category-tag">Target &le; $${Number(pred.targetPrice).toFixed(2)}</span>`);
+  }
+  if (state?.extracted?.currentPrice != null) {
+    const cur = Number(state.extracted.currentPrice).toFixed(2);
+    const dropTxt = state.effectiveDropPercentage != null ? ` (-${state.effectiveDropPercentage}%)` : '';
+    pills.push(`<span class="status-pill ${state.satisfied ? 'active' : 'approaching'}">Live: $${cur}${escapeHtml(dropTxt)}</span>`);
+  }
+  if (state?.extracted?.ratingConfidenceScore != null) {
+    const pct = (Number(state.extracted.ratingConfidenceScore) * 100).toFixed(1);
+    pills.push(`<span class="category-tag" title="95% Wilson Score Lower Bound">Wilson Rating: ${pct}%</span>`);
+  } else if (pred?.minRatingConfidence != null) {
+    const pct = (Number(pred.minRatingConfidence) * 100).toFixed(0);
+    pills.push(`<span class="category-tag">Min Rating: ${pct}%</span>`);
+  }
+  if (pred?.requiredPromoCode) {
+    const verified = state?.extracted?.promoCodeVerified;
+    const statusIcon = verified === true ? '✓' : verified === false ? '✗' : '•';
+    pills.push(`<span class="category-tag">Promo: ${escapeHtml(pred.requiredPromoCode)} ${statusIcon}</span>`);
+  }
+  return pills.join('');
 }
 
 async function fetchOverview() {
@@ -177,6 +207,7 @@ function renderWatchCardHtml(w, isDrawerOpen = false) {
       countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
     }
   }
+  const commerceBadgesHtml = buildCommerceBadgesHtml(w);
 
   // Parse Action Checklist items
   const meta = w.resolution_config?.provider_metadata || {};
@@ -217,6 +248,7 @@ function renderWatchCardHtml(w, isDrawerOpen = false) {
             ${phaseBadge}
             <span class="category-tag">${escapeHtml(catLabel)}</span>
             ${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}
+            ${commerceBadgesHtml}
             ${countdownHtml}
           </div>
           <h3 class="watch-title">${escapeHtml(w.title)}</h3>
@@ -314,7 +346,8 @@ function updateWatchCardDom(cardEl, w, isDrawerOpen) {
         countdownHtml = `<span class="countdown-clock ${isUrgent ? 'urgent' : ''}" data-target-date="${escapeHtml(targetDate)}">${escapeHtml(countdown.text)}</span>`;
       }
     }
-    const expectedMetaHtml = `${phaseBadge}<span class="category-tag">${escapeHtml(catLabel)}</span>${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}${countdownHtml}`.replace(/\s+/g, ' ');
+    const commerceBadgesHtml = buildCommerceBadgesHtml(w);
+    const expectedMetaHtml = `${phaseBadge}<span class="category-tag">${escapeHtml(catLabel)}</span>${domain ? `<span class="domain-tag">${escapeHtml(domain)}</span>` : ''}${commerceBadgesHtml}${countdownHtml}`.replace(/\s+/g, ' ');
     const currentMetaHtml = metaStrip.innerHTML.replace(/\s+/g, ' ');
     if (currentMetaHtml !== expectedMetaHtml) {
       metaStrip.innerHTML = expectedMetaHtml;
@@ -819,7 +852,10 @@ function setupModals() {
       target_url: form.target_url.value || undefined,
       chat_context: form.chat_context.value,
       recipient_email: form.recipient_email.value || undefined,
-      rrule: form.rrule.value || undefined
+      rrule: form.rrule.value || undefined,
+      target_price: form.target_price?.value || undefined,
+      min_rating_confidence: form.min_rating_confidence?.value || undefined,
+      required_promo_code: form.required_promo_code?.value || undefined
     };
 
     await fetch('/api/watches', {

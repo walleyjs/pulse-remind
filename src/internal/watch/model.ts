@@ -1,3 +1,5 @@
+import type { CommerceEvaluationResult, CommercePredicateConfig } from '../resolution/predicates.ts';
+
 export type WatchStatus =
   | 'hibernating'
   | 'exponential_approach'
@@ -16,6 +18,7 @@ export type WatchStatus =
 export type UniversalEventCategory =
   | 'product_launch'
   | 'ticket_drop'
+  | 'deal_or_promo'
   | 'regulatory_deadline'
   | 'hackathon'
   | 'visa_slot'
@@ -49,7 +52,7 @@ export interface ResolutionConfig {
   secondary_source_name?: string | null;
   secondary_source_url?: string | null;
   oracle_api: 'web_portal' | 'json_api' | 'mock';
-  dynamic_condition: 'applications_open' | 'deadline_approaching' | 'custom_keyword';
+  dynamic_condition: 'applications_open' | 'deadline_approaching' | 'custom_keyword' | 'commerce_threshold';
   provider_metadata: Record<string, string>;
   is_auto_resolve: boolean;
   entity_must_match: boolean;
@@ -100,6 +103,8 @@ export interface WatchRecord {
   last_status_summary: string | null;
   detected_deadline: string | null;
   detected_apply_url: string | null;
+  commerce_predicate?: CommercePredicateConfig | null;
+  last_commerce_state?: CommerceEvaluationResult | null;
   triggered_at: string | null;
   created_at: string;
 }
@@ -141,4 +146,5 @@ export interface CreateWatchInput {
   notify_channels?: NotificationChannelType[];
   recipient_email?: string | null;
   resolution_config?: Partial<ResolutionConfig>;
+  commerce_predicate?: CommercePredicateConfig | null;
 }

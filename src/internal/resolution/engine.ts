@@ -134,6 +134,7 @@ export class ResolutionEngine {
           summary: finalEvaluation.summary,
           detectedDeadline: finalEvaluation.detectedDeadline,
           detectedApplyUrl: finalEvaluation.detectedApplyUrl,
+          commerceEvaluation: finalEvaluation.commerceEvaluation,
           nextPollAfter
         }) || watch;
 
@@ -360,6 +361,7 @@ export class ResolutionEngine {
           summary: outcome.evaluation.summary,
           detectedDeadline: outcome.evaluation.detectedDeadline,
           detectedApplyUrl: outcome.evaluation.detectedApplyUrl,
+          commerceEvaluation: outcome.evaluation.commerceEvaluation,
           nextPollAfter: outcome.watch.poll_after,
           tenant_id: sub.tenant_id
         });

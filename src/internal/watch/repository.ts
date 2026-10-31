@@ -4,6 +4,11 @@ import { cloudDatabaseSync } from '../../pkg/db/cloud-sync.ts';
 import { enqueueOutbox } from '../../pkg/db/outbox.ts';
 import { DEFAULT_TENANT_ID, deriveCanonicalTenantId } from '../../pkg/tenant/tenant.ts';
 import { normalizeCanonicalUrl } from '../resolution/validator.ts';
+import {
+  extractCommercePredicateFromText,
+  type CommerceEvaluationResult,
+  type CommercePredicateConfig
+} from '../resolution/predicates.ts';
 import { calculateHazardRateSchedule } from '../temporal/hazard-rate.ts';
 import { notificationRepository } from '../notification/repository.ts';
 import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
@@ -47,6 +52,24 @@ function mapWatchRow(row: Record<string, unknown>): WatchRecord {
     oracleResponses = [];
   }
 
+  let commercePredicate: CommercePredicateConfig | null = null;
+  if (row.commerce_predicate_json) {
+    try {
+      commercePredicate = JSON.parse(String(row.commerce_predicate_json));
+    } catch {
+      commercePredicate = null;
+    }
+  }
+
+  let lastCommerceState: CommerceEvaluationResult | null = null;
+  if (row.last_commerce_state_json) {
+    try {
+      lastCommerceState = JSON.parse(String(row.last_commerce_state_json));
+    } catch {
+      lastCommerceState = null;
+    }
+  }
+
   return {
     id: String(row.id),
     tenant_id: String(row.tenant_id || DEFAULT_TENANT_ID),
@@ -83,6 +106,8 @@ function mapWatchRow(row: Record<string, unknown>): WatchRecord {
     last_status_summary: row.last_status_summary ? String(row.last_status_summary) : null,
     detected_deadline: row.detected_deadline ? String(row.detected_deadline) : null,
     detected_apply_url: row.detected_apply_url ? String(row.detected_apply_url) : null,
+    commerce_predicate: commercePredicate,
+    last_commerce_state: lastCommerceState,
     triggered_at: row.triggered_at ? String(row.triggered_at) : null,
     created_at: String(row.created_at)
   };
@@ -168,13 +193,22 @@ export class WatchRepository {
     const triggerType: TriggerType =
       input.trigger_type || (input.target_url ? (input.window_start_date ? 'hybrid' : 'web_monitor') : 'scheduled_date');
 
+    const inferredPredicate = extractCommercePredicateFromText(
+      `${input.title} ${input.condition_text || ''} ${input.chat_context || ''}`
+    );
+    const effectiveCommercePredicate: CommercePredicateConfig | null = input.commerce_predicate
+      ? { ...(inferredPredicate || {}), ...input.commerce_predicate }
+      : inferredPredicate;
+
     const resConfig: ResolutionConfig = {
       primary_source_name: input.resolution_config?.primary_source_name || 'Official Event & Opportunity Portal',
       primary_source_url: input.target_url || null,
       secondary_source_name: input.resolution_config?.secondary_source_name || 'Backup Mirror',
       secondary_source_url: input.secondary_url || input.resolution_config?.secondary_source_url || null,
       oracle_api: input.resolution_config?.oracle_api || 'web_portal',
-      dynamic_condition: input.resolution_config?.dynamic_condition || 'applications_open',
+      dynamic_condition:
+        input.resolution_config?.dynamic_condition ||
+        (effectiveCommercePredicate ? 'commerce_threshold' : 'applications_open'),
       provider_metadata: {
         ...(input.window_start_date ? { event_start_time: input.window_start_date } : {}),
         ...(input.resolution_config?.provider_metadata || {})
@@ -203,14 +237,14 @@ export class WatchRepository {
           canonical_url_key, rrule, trigger_type, condition_text, expected_keywords, closed_keywords,
           window_start_date, window_label, check_interval_minutes, poll_after,
           is_auto_resolve, resolution_config, status,
-          notify_channels, recipient_email, last_status_summary, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+          notify_channels, recipient_email, last_status_summary, commerce_predicate_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         effectiveTenantId,
         version,
         input.title,
-        input.category || 'event_or_opportunity',
+        input.category || (effectiveCommercePredicate ? 'deal_or_promo' : 'event_or_opportunity'),
         input.chat_context,
         input.source_chat_client || 'MCP Client',
         input.target_url || null,
@@ -230,6 +264,7 @@ export class WatchRepository {
         JSON.stringify(input.notify_channels || ['in_app', 'email']),
         resolvedEmail,
         initialSummary,
+        effectiveCommercePredicate ? JSON.stringify(effectiveCommercePredicate) : null,
         now
       );
 
@@ -596,6 +631,7 @@ export class WatchRepository {
     summary: string;
     detectedDeadline?: string | null;
     detectedApplyUrl?: string | null;
+    commerceEvaluation?: CommerceEvaluationResult | null;
     nextPollAfter?: number;
     tenant_id?: string;
   }): WatchRecord | null {
@@ -616,6 +652,32 @@ export class WatchRepository {
     const pollAfter = params.nextPollAfter ?? current.poll_after;
     const nextVersion = current.version + 1;
 
+    // Anti-flap hysteresis & historical price floor tracking
+    let nextResConfig = current.resolution_config;
+    if (params.commerceEvaluation?.extracted?.currentPrice != null) {
+      const obsPrice = params.commerceEvaluation.extracted.currentPrice;
+      const prevLowStr = current.resolution_config?.provider_metadata?.historical_low_price;
+      const prevLow = prevLowStr ? parseFloat(prevLowStr) : null;
+      const newLow = prevLow === null || isNaN(prevLow) ? obsPrice : Math.min(prevLow, obsPrice);
+      nextResConfig = {
+        ...current.resolution_config,
+        provider_metadata: {
+          ...current.resolution_config.provider_metadata,
+          last_observed_price: String(obsPrice),
+          historical_low_price: String(newLow)
+        }
+      };
+    }
+
+    const nextCommerceStateJson =
+      params.commerceEvaluation !== undefined
+        ? params.commerceEvaluation
+          ? JSON.stringify(params.commerceEvaluation)
+          : null
+        : current.last_commerce_state
+          ? JSON.stringify(current.last_commerce_state)
+          : null;
+
     return runInTransaction(() => {
       db.prepare(`
         UPDATE watches
@@ -627,6 +689,8 @@ export class WatchRepository {
             last_status_summary = ?,
             detected_deadline = COALESCE(?, detected_deadline),
             detected_apply_url = COALESCE(?, detected_apply_url),
+            resolution_config = ?,
+            last_commerce_state_json = ?,
             triggered_at = ?,
             version = ?
         WHERE id = ?
@@ -639,6 +703,8 @@ export class WatchRepository {
         params.summary,
         params.detectedDeadline || null,
         params.detectedApplyUrl || null,
+        JSON.stringify(nextResConfig),
+        nextCommerceStateJson,
         triggeredAt,
         nextVersion,
         params.id

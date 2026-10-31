@@ -124,6 +124,7 @@
             <select id="watchCategory" name="category" class="form-select">
               <option value="tickets">Tickets &amp; Passes</option>
               <option value="product_launch">Product Drop</option>
+              <option value="deal_or_promo">Price Drop / Verified Deal</option>
               <option value="regulatory_deadline">Regulatory / Compliance</option>
               <option value="scholarship">Scholarship / Fellowship</option>
               <option value="grant">Grant / Accelerator</option>
@@ -147,6 +148,21 @@
         <div class="form-group">
           <label for="watchContext">Action Checklist <span class="label-hint">(1 item per line)</span></label>
           <textarea id="watchContext" name="chat_context" rows="3" required placeholder="Submit recommendation letters&#10;Verify GRE score delivery&#10;Complete portal submission"></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="watchTargetPrice">Target Price <span class="label-hint">(Optional $)</span></label>
+            <input type="number" step="0.01" id="watchTargetPrice" name="target_price" placeholder="e.g. 1499.00" />
+          </div>
+          <div class="form-group">
+            <label for="watchMinRating">Min Wilson Rating % <span class="label-hint">(e.g. 85)</span></label>
+            <input type="number" step="1" min="1" max="99" id="watchMinRating" name="min_rating_confidence" placeholder="85" />
+          </div>
+          <div class="form-group">
+            <label for="watchPromoCode">Promo Code <span class="label-hint">(Optional)</span></label>
+            <input type="text" id="watchPromoCode" name="required_promo_code" placeholder="SAVE20" />
+          </div>
         </div>
 
         <div class="form-row">

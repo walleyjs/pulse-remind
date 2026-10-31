@@ -63,6 +63,8 @@ export function runSchemaMigrations(): void {
       last_status_summary TEXT,
       detected_deadline TEXT,
       detected_apply_url TEXT,
+      commerce_predicate_json TEXT,
+      last_commerce_state_json TEXT,
       triggered_at TEXT,
       created_at TEXT NOT NULL
     );
@@ -140,6 +142,8 @@ export function runSchemaMigrations(): void {
   ensureColumnExists('watches', 'oracle_responses', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumnExists('watches', 'canonical_url_key', 'TEXT');
   ensureColumnExists('watches', 'rrule', 'TEXT');
+  ensureColumnExists('watches', 'commerce_predicate_json', 'TEXT');
+  ensureColumnExists('watches', 'last_commerce_state_json', 'TEXT');
 
   ensureColumnExists('check_logs', 'tenant_id', "TEXT NOT NULL DEFAULT 'tenant_default'");
   ensureColumnExists('check_logs', 'oracle_name', "TEXT DEFAULT 'web_portal'");

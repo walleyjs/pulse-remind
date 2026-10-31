@@ -10,6 +10,10 @@ import {
   stripHtmlToText,
   validateEntityMatch
 } from '../validator.ts';
+import {
+  evaluateCommercePredicate,
+  extractStructuredCommerceState
+} from '../predicates.ts';
 
 export class WebPortalOracleAdapter implements DecisionMakerAdapter {
   readonly oracleName = 'web_portal_oracle';
@@ -91,6 +95,59 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
           queryUrl: canonicalEndpoint
         });
         return { html, httpStatus: 200, queryUrl: canonicalEndpoint, cacheHit: false };
+      }
+
+      const localDealMatch = url.match(
+        /^https?:\/\/(?:localhost|127\.0\.0\.1|pulse-remind\.onrender\.com)(?::\d+)?\/demo\/deal-portal/i
+      );
+      if (localDealMatch) {
+        const parsedDealUrl = new URL(url);
+        const priceParam = parseFloat(parsedDealUrl.searchParams.get('price') || '1499.00');
+        const listPriceParam = parseFloat(parsedDealUrl.searchParams.get('list_price') || '1999.00');
+        const ratingParam = parseFloat(parsedDealUrl.searchParams.get('rating') || '4.8');
+        const reviewsParam = parseInt(parsedDealUrl.searchParams.get('reviews') || '420', 10);
+        const promoParam = (parsedDealUrl.searchParams.get('promo') || 'SAVE20').toUpperCase();
+        const stockParam = parsedDealUrl.searchParams.get('stock') === 'out' ? 'OutOfStock' : 'InStock';
+        const titleParam = parsedDealUrl.searchParams.get('title') || 'Apple MacBook Pro M4 Max 16-inch';
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${titleParam} — Official Deal Portal</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": ${JSON.stringify(titleParam)},
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "${ratingParam}",
+      "reviewCount": "${reviewsParam}",
+      "bestRating": "5"
+    },
+    "offers": {
+      "@type": "Offer",
+      "price": "${priceParam.toFixed(2)}",
+      "highPrice": "${listPriceParam.toFixed(2)}",
+      "priceCurrency": "USD",
+      "availability": "https://schema.org/${stockParam}",
+      "priceValidUntil": "2026-12-31",
+      "seller": {
+        "@type": "Organization",
+        "name": "Verified Direct Store"
+      }
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>${titleParam}</h1>
+  <p>Current Price: USD ${priceParam.toFixed(2)} (List: USD ${listPriceParam.toFixed(2)})</p>
+  <p>Verified Rating: ${ratingParam} stars (${reviewsParam} reviews)</p>
+  <p>Promo Status: Promo code '${promoParam}' gives 20% off at checkout.</p>
+</body>
+</html>`;
+        return { html, httpStatus: 200, queryUrl: url, cacheHit: false };
       }
 
       await oracleCache.paceRequest();
@@ -200,6 +257,59 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
       throw new Error(
         `Entity mismatch. Target page content at ${queryUrl} did not match any expected tokens for "${watch.title}". Auto-resolution paused for review.`
       );
+    }
+
+    // Dual-Mode Resolution: If watch has a Commerce Predicate, run structured price/rating/promo evaluation
+    if (watch.commerce_predicate) {
+      const extractedCommerce = extractStructuredCommerceState(
+        html,
+        watch.commerce_predicate.requiredPromoCode
+      );
+      const commerceEval = evaluateCommercePredicate(extractedCommerce, watch.commerce_predicate);
+      const isOpen = commerceEval.satisfied;
+      const outcome = isOpen ? 1 : null;
+      const confidence = isOpen ? 0.98 : 0.92;
+      const detectedDeadline = extractedCommerce.priceValidUntil || null;
+
+      const oracleRecord: OracleResponseRecord = {
+        oracle_name: this.oracleName,
+        query_url: queryUrl,
+        response_json: JSON.stringify({
+          is_open: isOpen,
+          outcome,
+          confidence,
+          commerce_predicate: watch.commerce_predicate,
+          commerce_evaluation: commerceEval,
+          entity_token: entityCheck.matchedToken,
+          snapshot_hash: snapshotHash
+        }),
+        recorded_at: new Date().toISOString(),
+        cache_hit: cacheHit,
+        entity_validated: true
+      };
+
+      const summaryPrefix = isOpen
+        ? `DEAL / PRICE TARGET MET (${Math.round(confidence * 100)}% confidence, Entity "${entityCheck.matchedToken}" verified)`
+        : `Monitoring Commerce Threshold (Entity "${entityCheck.matchedToken}" verified)`;
+      const summary = `${summaryPrefix}: ${commerceEval.reasons.join(' | ')}`;
+
+      return {
+        httpStatus,
+        isOpen,
+        outcome,
+        confidence,
+        summary,
+        extractedSnippet: cleanText.slice(0, 260),
+        snapshotHash,
+        pageChanged,
+        detectedDeadline,
+        detectedOpenDate: null,
+        detectedApplyUrl: queryUrl,
+        oracleRecord,
+        cacheHit,
+        entityValidated: true,
+        commerceEvaluation: commerceEval
+      };
     }
 
     const analysis = evaluateWebpageSignals(watch, html, queryUrl);

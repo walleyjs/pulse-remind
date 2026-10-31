@@ -1,5 +1,9 @@
 import { config } from '../../config/index.ts';
 import type { CreateWatchInput } from '../watch/model.ts';
+import {
+  extractCommercePredicateFromText,
+  type CommercePredicateConfig
+} from '../resolution/predicates.ts';
 import { resolveTimeframeWindow } from './timeframe.ts';
 
 export interface ExtractedChatOpportunity {
@@ -12,6 +16,7 @@ export interface ExtractedChatOpportunity {
   condition_text: string;
   confidence: number;
   reasoning: string;
+  commerce_predicate?: CommercePredicateConfig | null;
 }
 
 interface CanonicalRegistryEntry {
@@ -75,6 +80,9 @@ const CANONICAL_OPPORTUNITY_REGISTRY: CanonicalRegistryEntry[] = [
 ];
 
 export function inferCategoryFromText(text: string): string {
+  if (/\b(?:price\s+drop|under\s+\$|below\s+\$|%\s*off|promo\s+code|coupon\s+code|rating\s+confidence|wilson)\b/i.test(text)) {
+    return 'deal_or_promo';
+  }
   if (/ticket|concert|festival|presale|on sale/i.test(text)) return 'tickets';
   if (/conference|summit|hackathon|expo/i.test(text)) return 'conference';
   if (/meetup|event|workshop|registration/i.test(text)) return 'event';
@@ -150,27 +158,48 @@ export class ChatExtractorService {
 
     if (matches.length === 0) {
       const windowInfo = resolveTimeframeWindow(clean);
+      const commercePred = extractCommercePredicateFromText(clean);
       const targetUrl =
-        urlMatches[0] || this.resolveCanonicalUrl(clean, windowInfo.window_label, defaultDemoBaseUrl);
-      const category = inferCategoryFromText(clean);
+        urlMatches[0] ||
+        (commercePred
+          ? `${defaultDemoBaseUrl}/demo/deal-portal`
+          : this.resolveCanonicalUrl(clean, windowInfo.window_label, defaultDemoBaseUrl));
+      const category = commercePred ? 'deal_or_promo' : inferCategoryFromText(clean);
+
+      // Extract a clean product/deal title if commerce predicate was matched
+      let fallbackTitle =
+        category === 'scholarship'
+          ? 'Graduate School Scholarship Application'
+          : category === 'event'
+            ? 'Upcoming Event Registration Reminder'
+            : category === 'ticket_drop'
+              ? 'Event Ticket On-Sale Reminder'
+              : category === 'deal_or_promo'
+                ? 'Verified Price & Rating Deal Watch'
+                : 'Planned Event & Opportunity Reminder';
+
+      if (commercePred) {
+        const prodMatch = clean.match(
+          /(?:when|for|on)\s+(?:the\s+)?([A-Z][A-Za-z0-9\s\-+]{3,40}?)\s+(?:drops?|falls?|is\s+under|is\s+below|reaches|goes)/i
+        );
+        if (prodMatch) {
+          fallbackTitle = prodMatch[1].trim();
+        }
+      }
 
       results.push({
-        title:
-          category === 'scholarship'
-            ? 'Graduate School Scholarship Application'
-            : category === 'event'
-              ? 'Upcoming Event Registration Reminder'
-              : category === 'ticket_drop'
-                ? 'Event Ticket On-Sale Reminder'
-                : 'Planned Event & Opportunity Reminder',
+        title: fallbackTitle,
         category,
         chat_context: clean.slice(0, 360),
         target_url: targetUrl,
         window_start_date: windowInfo.window_start_date,
         window_label: windowInfo.window_label,
-        condition_text: `Event or registration opens (${windowInfo.window_label})`,
+        condition_text: commercePred
+          ? `Price/Rating threshold met for ${fallbackTitle}`
+          : `Event or registration opens (${windowInfo.window_label})`,
         confidence: 0.85,
-        reasoning: `Detected future-dated event/planning intent ("${windowInfo.window_label}") in conversation.`
+        reasoning: `Detected future-dated event/planning intent ("${windowInfo.window_label}") in conversation.`,
+        commerce_predicate: commercePred
       });
       return results;
     }
@@ -188,6 +217,7 @@ export class ChatExtractorService {
         i + 1 < matches.length ? matches[i + 1].index : Math.min(clean.length, current.index + 220);
       const clauseForWindow = clean.slice(current.index, clauseEndIdx);
       const windowInfo = resolveTimeframeWindow(clauseForWindow);
+      const commercePred = extractCommercePredicateFromText(localContext);
 
       const localUrlMatch = localContext.match(/https?:\/\/[^\s)"'>]+/i);
       let targetUrl = localUrlMatch ? localUrlMatch[0] : urlMatches[i] || null;
@@ -201,14 +231,15 @@ export class ChatExtractorService {
 
       results.push({
         title: current.title,
-        category: inferCategoryFromText(current.title),
+        category: commercePred ? 'deal_or_promo' : inferCategoryFromText(current.title),
         chat_context: `From AI chat session: "${localContext}"`,
         target_url: targetUrl,
         window_start_date: windowInfo.window_start_date,
         window_label: windowInfo.window_label,
         condition_text: `${current.title} transitions to open/live (${windowInfo.window_label})`,
         confidence: 0.94,
-        reasoning: `Extracted "${current.title}" with target window "${windowInfo.window_label}" and linked monitor target.`
+        reasoning: `Extracted "${current.title}" with target window "${windowInfo.window_label}" and linked monitor target.`,
+        commerce_predicate: commercePred
       });
     }
 
@@ -227,7 +258,8 @@ export class ChatExtractorService {
       window_start_date: extracted.window_start_date,
       window_label: extracted.window_label,
       notify_channels: ['in_app', 'email'],
-      recipient_email: recipientEmail || undefined
+      recipient_email: recipientEmail || undefined,
+      commerce_predicate: extracted.commerce_predicate || undefined
     };
   }
 }

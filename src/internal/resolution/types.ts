@@ -1,5 +1,6 @@
 import type { CheckLogRecord, OracleResponseRecord, WatchRecord } from '../watch/model.ts';
 import type { NotificationRecord } from '../notification/model.ts';
+import type { CommerceEvaluationResult } from './predicates.ts';
 
 export interface EvaluationResult {
   httpStatus: number | null;
@@ -22,6 +23,7 @@ export interface EvaluationResult {
   oracleRecord: OracleResponseRecord | null;
   cacheHit: boolean;
   entityValidated: boolean;
+  commerceEvaluation?: CommerceEvaluationResult | null;
 }
 
 /**
