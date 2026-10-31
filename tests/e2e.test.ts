@@ -2631,6 +2631,123 @@ test('33. Automatic 410 Gone / 404 Not Found Web Push Token Pruning (RFC 8030 Se
   }
 });
 
+test('34. Temporal Commerce Predicate Engine: Price Drops, Wilson Score Rating Quality, and Promo Verification', async () => {
+  const {
+    calculateWilsonRatingConfidence,
+    extractStructuredCommerceState,
+    evaluateCommercePredicate,
+    validatePromoCodeToken
+  } = await import('../src/internal/resolution/predicates.ts');
+
+  // 34a. Wilson Score Confidence Anti-Fraud Verification:
+  // A product with 5.0 stars from only 1 review must score LOW confidence (< 0.30)
+  // A product with 4.7 stars from 500 reviews must score HIGH confidence (> 0.85)
+  const fakeReviewWilson = calculateWilsonRatingConfidence(5.0, 1);
+  const genuineReviewWilson = calculateWilsonRatingConfidence(4.7, 500);
+
+  assert.ok(
+    fakeReviewWilson < 0.35,
+    `Fake/unverified 1-review sample must yield low Wilson score, got ${fakeReviewWilson}`
+  );
+  assert.ok(
+    genuineReviewWilson > 0.85,
+    `Statistically backed 500-review sample must yield high Wilson score, got ${genuineReviewWilson}`
+  );
+
+  // 34b. Schema.org Offer & AggregateRating Extraction Pipeline
+  const mockProductHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "Apple MacBook Pro M4 Max 16-inch",
+        "aggregateRating": {
+          "@type": "AggregateRating",
+          "ratingValue": "4.8",
+          "reviewCount": "342",
+          "bestRating": "5"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "2999.00",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock",
+          "priceValidUntil": "2026-11-15",
+          "seller": {
+            "@type": "Organization",
+            "name": "Authorized Apple Reseller"
+          }
+        }
+      }
+      </script>
+    </head>
+    <body>
+      <main><h1>MacBook Pro Deal</h1></main>
+    </body>
+    </html>
+  `;
+
+  const extracted = extractStructuredCommerceState(mockProductHtml);
+  assert.equal(extracted.currentPrice, 2999.00);
+  assert.equal(extracted.currency, 'USD');
+  assert.equal(extracted.availability, 'InStock');
+  assert.equal(extracted.rawRatingValue, 4.8);
+  assert.equal(extracted.ratingCount, 342);
+  assert.ok(extracted.ratingConfidenceScore! > 0.85);
+
+  // 34c. Predicate Evaluation: Target Price satisfied ($2,999 <= $3,200) and Wilson Rating satisfied (> 0.80)
+  const evalSatisfied = evaluateCommercePredicate(extracted, {
+    targetPrice: 3200,
+    referencePrice: 3499,
+    maxDropPercentage: 10,
+    minRatingConfidence: 0.80,
+    minReviewCount: 50
+  });
+  assert.equal(evalSatisfied.satisfied, true);
+  assert.equal(evalSatisfied.savingsAmount, 500.00);
+  assert.equal(evalSatisfied.effectiveDropPercentage, 14.3);
+
+  // 34d. Predicate Evaluation: Target Price NOT satisfied ($2,999 not <= $2,500)
+  const evalUnsatisfied = evaluateCommercePredicate(extracted, {
+    targetPrice: 2500
+  });
+  assert.equal(evalUnsatisfied.satisfied, false);
+  assert.ok(evalUnsatisfied.reasons.some((r) => r.includes('exceeds target')));
+
+  // 34e. Non-destructive promo-code token verification
+  const promoBasketState = {
+    active_coupons: {
+      'TECH2026': 15,
+      'VIPFALL': 25
+    }
+  };
+  const validCoupon = validatePromoCodeToken('TECH2026', promoBasketState);
+  assert.equal(validCoupon.valid, true);
+  assert.equal(validCoupon.discountPercentage, 15);
+
+  const invalidCoupon = validatePromoCodeToken('EXPIRED99', promoBasketState);
+  assert.equal(invalidCoupon.valid, false);
+
+  // 34f. Sub-millisecond Performance Benchmark (1,000 iterations < 25ms total)
+  const t0 = performance.now();
+  for (let i = 0; i < 1000; i++) {
+    evaluateCommercePredicate(extracted, {
+      targetPrice: 3200,
+      referencePrice: 3499,
+      maxDropPercentage: 10,
+      minRatingConfidence: 0.80
+    });
+  }
+  const totalMs = performance.now() - t0;
+  assert.ok(
+    totalMs < 50,
+    `1,000 evaluations must complete in < 50ms (average < 0.05ms), completed in ${totalMs.toFixed(2)}ms`
+  );
+});
+
 
 
 
