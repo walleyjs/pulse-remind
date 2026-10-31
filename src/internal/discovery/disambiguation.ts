@@ -1,9 +1,12 @@
 import {
   extractCommercePredicateFromText,
+  formatCurrencyAmount,
   type CommercePredicateConfig
 } from '../resolution/predicates.ts';
 
 export type ProductDomainClass = 'appliance' | 'computing' | 'electronics' | 'service' | 'general';
+export type ProductCondition = 'brand_new' | 'uk_used' | 'refurbished' | 'any';
+export type DestinationZone = 'lagos' | 'abuja' | 'interstate';
 
 export interface ParsedDiscoveryIntent {
   rawQuery: string;
@@ -12,6 +15,8 @@ export interface ParsedDiscoveryIntent {
   modelTokens: string[];
   coreTokens: string[];
   domainClass: ProductDomainClass;
+  targetCondition: ProductCondition;
+  destinationZone?: DestinationZone;
   minPlausiblePriceFloor: number;
   negativeAccessoryTokens: string[];
   predicate: CommercePredicateConfig;
@@ -35,6 +40,19 @@ const KNOWN_BRANDS = [
   'electrolux',
   'haier',
   'hisense',
+  'tcl',
+  'bruhm',
+  'scanfrost',
+  'nexus',
+  'polystar',
+  'thermocool',
+  'maxi',
+  'skyrun',
+  'century',
+  'infinix',
+  'tecno',
+  'itel',
+  'oraimo',
   'panasonic',
   'apple',
   'sony',
@@ -157,8 +175,28 @@ const STOP_WORDS = new Set([
   'msrp',
   'is',
   'in',
-  'of'
+  'of',
+  'tokunbo',
+  'used',
+  'brand',
+  'new',
+  'lagos',
+  'abuja',
+  'nigeria'
 ]);
+
+/**
+ * Detects whether text describes a product as brand_new, uk_used (or Tokunbo / fairly used), or refurbished.
+ */
+export function detectProductCondition(text: string): ProductCondition {
+  if (/\b(uk\s+used|london\s+used|tokunbo|fairly\s+used|second\s+hand|pre-?owned)\b/i.test(text)) {
+    return 'uk_used';
+  }
+  if (/\b(refurbished|renewed|open\s*box|b-stock)\b/i.test(text)) {
+    return 'refurbished';
+  }
+  return 'brand_new';
+}
 
 const SYNONYM_MAP: Record<string, string[]> = {
   washer: ['washing', 'machine', 'washer'],
@@ -227,20 +265,42 @@ export function parseDiscoveryQuery(
     mergedPredicate.minReviewCount = 10;
   }
 
-  // Strip pricing, rating, and promo clauses to isolate the product phrase
+  // Strip pricing, rating, promo clauses, conditions, and locations to isolate the product phrase
   const stripped = rawQuery
     .replace(
-      /(?:under|below|less\s+than|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?)\s*(?:\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*[0-9,]+(?:\.[0-9]{1,2})?/gi,
+      /(?:under|below|less\s+than|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?)\s*(?:₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*[0-9,]+(?:\.[0-9]{1,2})?\s*([kmKM])?\b/gi,
       ' '
     )
     .replace(
-      /\(?(?:was|from|msrp|list\s+price)\s*(?:\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*[0-9,]+(?:\.[0-9]{1,2})?\)?/gi,
+      /\(?(?:was|from|msrp|list\s+price)\s*(?:₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*[0-9,]+(?:\.[0-9]{1,2})?\s*([kmKM])?\b\)?/gi,
       ' '
     )
     .replace(/(?:at\s+least\s+)?[0-9]{1,2}(?:\.[0-9]+)?\s*%\s*(?:off|discount|drop|rating\s+confidence)/gi, ' ')
     .replace(/(?:with\s+)?(?:promo|coupon|voucher)(?:\s+code)?\s+['"]?[A-Z0-9_\-]{3,24}['"]?/gi, ' ')
     .replace(/(?:with\s+)?[0-9]{1,2}(?:\.[0-9]+)?%?\s*(?:wilson|verified)?\s*rating\s*confidence/gi, ' ')
-    .replace(/[0-9.]+\+?\s*(?:stars?|★|reviews)/gi, ' ');
+    .replace(/[0-9.]+\+?\s*(?:stars?|★|reviews)/gi, ' ')
+    .replace(/\b(brand\s+new|sealed|box\s+new|uk\s+used|london\s+used|tokunbo|fairly\s+used|second\s+hand|refurbished|renewed|open\s*box)\b/gi, ' ')
+    .replace(/\b(in\s+lagos|in\s+abuja|to\s+lagos|to\s+abuja|interstate|lagos|abuja)\b/gi, ' ');
+
+  // Condition classification: brand_new, uk_used, refurbished, any
+  let targetCondition: ProductCondition = 'brand_new';
+  if (/\b(uk\s+used|london\s+used|tokunbo|fairly\s+used|second\s+hand|pre-?owned)\b/i.test(rawQuery)) {
+    targetCondition = 'uk_used';
+  } else if (/\b(refurbished|renewed|open\s*box|b-stock)\b/i.test(rawQuery)) {
+    targetCondition = 'refurbished';
+  } else if (/\b(any\s+condition|all\s+conditions)\b/i.test(rawQuery)) {
+    targetCondition = 'any';
+  }
+
+  // Destination zone modeling: lagos, abuja, interstate
+  let destinationZone: DestinationZone | undefined;
+  if (/\b(in\s+abuja|to\s+abuja|\babuja\b)\b/i.test(rawQuery)) {
+    destinationZone = 'abuja';
+  } else if (/\b(interstate|outside\s+lagos|upcountry)\b/i.test(rawQuery)) {
+    destinationZone = 'interstate';
+  } else if (/\b(in\s+lagos|to\s+lagos|\blagos\b)\b/i.test(rawQuery)) {
+    destinationZone = 'lagos';
+  }
 
   const rawTokens = tokenizeNormalized(stripped);
   const rawQueryLowerTokens = new Set(tokenizeNormalized(rawQuery));
@@ -252,7 +312,7 @@ export function parseDiscoveryQuery(
   let brand: string | null = null;
   for (const t of coreTokens) {
     if (KNOWN_BRANDS.includes(t)) {
-      brand = t.toUpperCase() === 'LG' || t.toUpperCase() === 'GE' || t.toUpperCase() === 'HP'
+      brand = t.toUpperCase() === 'LG' || t.toUpperCase() === 'GE' || t.toUpperCase() === 'HP' || t.toUpperCase() === 'TCL'
         ? t.toUpperCase()
         : t.charAt(0).toUpperCase() + t.slice(1);
       break;
@@ -274,6 +334,9 @@ export function parseDiscoveryQuery(
 
   const { domainClass, minPlausiblePriceFloor } = inferDomainClass(coreTokens);
   let effectiveFloor = userAskedForAccessory ? 1 : minPlausiblePriceFloor;
+  if (mergedPredicate.currency === 'NGN') {
+    effectiveFloor = userAskedForAccessory ? 1000 : minPlausiblePriceFloor * 1000;
+  }
   if (mergedPredicate.targetPrice !== undefined && mergedPredicate.targetPrice > 0) {
     effectiveFloor = Math.min(effectiveFloor, mergedPredicate.targetPrice * 0.22);
   }
@@ -288,6 +351,8 @@ export function parseDiscoveryQuery(
     modelTokens,
     coreTokens,
     domainClass,
+    targetCondition,
+    destinationZone,
     minPlausiblePriceFloor: Number(effectiveFloor.toFixed(2)),
     negativeAccessoryTokens,
     predicate: mergedPredicate
@@ -296,17 +361,31 @@ export function parseDiscoveryQuery(
 
 /**
  * Evaluates whether a candidate merchant listing represents the requested core SKU/category,
- * filtering out accessories, spare parts, toys/miniatures, and mismatched brands/models.
+ * filtering out accessories, spare parts, toys/miniatures, condition mismatches (UK Used / Tokunbo / Refurbished),
+ * and mismatched brands/models.
  */
 export function evaluateCandidateConformance(
   intent: ParsedDiscoveryIntent,
   candidateTitle: string,
-  candidateLandedPrice: number
+  candidateLandedPrice: number,
+  candidateConditionHint?: ProductCondition
 ): ConformanceEvaluation {
   const candidateTokens = tokenizeNormalized(candidateTitle);
   const candidateSet = new Set(candidateTokens);
 
-  // 1. Negative Anti-Accessory & Toy Trap Filter
+  // 1. Condition Classifier & "UK Used / Tokunbo" Guard
+  const detectedCondition = detectProductCondition(candidateTitle);
+  const effectiveCondition = candidateConditionHint || detectedCondition;
+  if (intent.targetCondition === 'brand_new' && effectiveCondition !== 'brand_new') {
+    return {
+      conformant: false,
+      similarityScore: 0,
+      matchedTokens: [],
+      rejectionReason: `Condition mismatch: listing is ${effectiveCondition === 'uk_used' ? 'UK Used / Tokunbo' : 'Refurbished'} (query target: brand_new)`
+    };
+  }
+
+  // 2. Negative Anti-Accessory & Toy Trap Filter
   for (const neg of intent.negativeAccessoryTokens) {
     if (candidateSet.has(neg)) {
       return {
@@ -333,13 +412,16 @@ export function evaluateCandidateConformance(
     };
   }
 
-  // 2. Plausible Category Price Floor Guard
+  // 3. Plausible Category Price Floor Guard
   if (candidateLandedPrice < intent.minPlausiblePriceFloor) {
+    const cur = intent.predicate.currency || 'USD';
+    const formattedPrice = formatCurrencyAmount(candidateLandedPrice, cur);
+    const formattedFloor = formatCurrencyAmount(intent.minPlausiblePriceFloor, cur);
     return {
       conformant: false,
       similarityScore: 0,
       matchedTokens: [],
-      rejectionReason: `Implausible price ($${candidateLandedPrice.toFixed(2)} < category floor $${intent.minPlausiblePriceFloor.toFixed(2)}) — likely accessory or deposit`
+      rejectionReason: `Implausible price (${formattedPrice} < category floor ${formattedFloor}) — likely accessory or deposit`
     };
   }
 

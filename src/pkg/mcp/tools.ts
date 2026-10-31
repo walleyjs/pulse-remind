@@ -306,6 +306,11 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'number',
           description: 'Maximum number of competing merchant URLs to include in a cluster watch (1 to 5).'
         },
+        destination_zone: {
+          type: 'string',
+          enum: ['lagos', 'abuja', 'interstate'],
+          description: 'Optional destination delivery region in Nigeria for accurate freight and landed price computation.'
+        },
         recipient_email: {
           type: 'string',
           description: 'Optional destination email address for alert delivery.'
@@ -545,11 +550,17 @@ export async function executeMcpTool(
         predicateOverrides.requiredPromoCode = String(args.required_promo_code).trim().toUpperCase();
       }
 
+      const destinationZone =
+        args.destination_zone === 'abuja' || args.destination_zone === 'interstate' || args.destination_zone === 'lagos'
+          ? args.destination_zone
+          : undefined;
+
       const discovery = await dealDiscoveryService.discoverAndWatch({
         query,
         tenantId,
         baseUrl,
         predicateOverrides,
+        destinationZone,
         autoWatchIfAboveTarget: args.auto_watch_if_above_target !== false,
         maxClusterWatches: args.max_cluster_watches ? Number(args.max_cluster_watches) : 3,
         recipientEmail: providedEmail

@@ -2,10 +2,14 @@ import crypto from 'node:crypto';
 import { config } from '../../config/index.ts';
 import { isDisallowedAmbientEmail } from '../../pkg/privacy/minimizer.ts';
 import { DEFAULT_TENANT_ID } from '../../pkg/tenant/tenant.ts';
-import type { CommercePredicateConfig } from '../resolution/predicates.ts';
+import { formatCurrencyAmount, type CommercePredicateConfig } from '../resolution/predicates.ts';
 import type { NotificationChannelType, WatchRecord } from '../watch/model.ts';
 import { watchService, WatchService } from '../watch/service.ts';
-import { parseDiscoveryQuery, type ParsedDiscoveryIntent } from './disambiguation.ts';
+import {
+  parseDiscoveryQuery,
+  type ParsedDiscoveryIntent,
+  type DestinationZone
+} from './disambiguation.ts';
 import {
   discoveryProviderRegistry,
   DiscoveryProviderRegistry,
@@ -22,6 +26,7 @@ export interface DealDiscoveryRequest {
   tenantId?: string;
   baseUrl?: string;
   predicateOverrides?: Partial<CommercePredicateConfig>;
+  destinationZone?: DestinationZone;
   autoWatchIfAboveTarget?: boolean;
   alwaysCreateWatch?: boolean;
   maxClusterWatches?: number;
@@ -64,12 +69,16 @@ export class DealDiscoveryService {
     );
 
     const intent = parseDiscoveryQuery(req.query, req.predicateOverrides);
+    const effectiveZone: DestinationZone =
+      req.destinationZone || req.searchOptions?.destinationZone || intent.destinationZone || 'lagos';
+
     const rawCandidates = await this.providers.searchAll(intent, {
       baseUrl,
+      destinationZone: effectiveZone,
       ...(req.searchOptions || {})
     });
 
-    const ranking = rankDiscoveredCandidates(intent, rawCandidates);
+    const ranking = rankDiscoveredCandidates(intent, rawCandidates, { destinationZone: effectiveZone });
     const { rankedDeals, immediateWinners, rejectedCandidates } = ranking;
 
     const cleanEmail =
@@ -130,18 +139,20 @@ export class DealDiscoveryService {
 
       if (contenders.length > 0) {
         clusterGroupId = 'cluster_' + crypto.randomUUID().slice(0, 8);
+        const cur = intent.predicate.currency || 'USD';
         const targetText =
           intent.predicate.targetPrice != null
-            ? `$${intent.predicate.targetPrice.toFixed(2)}`
+            ? formatCurrencyAmount(intent.predicate.targetPrice, cur)
             : intent.predicate.maxDropPercentage != null
               ? `${intent.predicate.maxDropPercentage}% off`
               : 'target drop';
 
         for (const contender of contenders) {
           const item = contender.listing;
+          const itemCur = item.currency || cur;
           const wilsonPct = (contender.wilsonConfidence * 100).toFixed(1);
           const checklist = [
-            `Compare ${item.seller} current landed price ($${contender.landedPrice.toFixed(2)}) against ${targetText} threshold`,
+            `Compare ${item.seller} current landed price (${formatCurrencyAmount(contender.landedPrice, itemCur)}) against ${targetText} threshold`,
             item.promoCode
               ? `Apply verified promo code ${item.promoCode} at checkout`
               : 'Check merchant checkout for stackable promo codes',

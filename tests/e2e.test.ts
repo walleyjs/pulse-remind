@@ -3005,6 +3005,227 @@ test('36. Multi-Platform Deal Discovery & Comparison Engine: Anti-Accessory Disa
   assert.ok(siblingAfterRace.last_status_summary?.includes('Cluster race won by sibling store watch'));
 });
 
+test('37. Nigerian E-Commerce Localization: NGN & Slang Tokenizer, UK-Used Guard, Merchant Trust Tiers, Regional Freight, and Multi-Store Cluster Race', async () => {
+  const { Readable } = await import('node:stream');
+  const {
+    parseCurrencyAmount,
+    formatCurrencyAmount,
+    extractCommercePredicateFromText
+  } = await import('../src/internal/resolution/predicates.ts');
+  const { parseDiscoveryQuery } = await import('../src/internal/discovery/disambiguation.ts');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const { executeMcpTool } = await import('../src/pkg/mcp/tools.ts');
+  const { watchService } = await import('../src/internal/watch/service.ts');
+  const { resolutionEngine } = await import('../src/internal/resolution/engine.ts');
+
+  const baseUrl = 'http://localhost:3456';
+  const testTenant = 'tenant_nigeria_commerce_' + Date.now();
+
+  // 37a. Nigerian Currency (NGN) & Slang Tokenizer
+  const parsed1 = parseCurrencyAmount('₦550,000');
+  assert.equal(parsed1?.amount, 550000);
+  assert.equal(parsed1?.currency, 'NGN');
+
+  const parsed2 = parseCurrencyAmount('NGN 550000');
+  assert.equal(parsed2?.amount, 550000);
+  assert.equal(parsed2?.currency, 'NGN');
+
+  const parsed3 = parseCurrencyAmount('N450k');
+  assert.equal(parsed3?.amount, 450000);
+  assert.equal(parsed3?.currency, 'NGN');
+
+  const parsed4 = parseCurrencyAmount('1.2m');
+  assert.equal(parsed4?.amount, 1200000);
+  assert.equal(parsed4?.currency, 'NGN');
+
+  const formattedNgn = formatCurrencyAmount(550000, 'NGN');
+  assert.equal(formattedNgn, '₦550,000');
+
+  const predNgn1 = extractCommercePredicateFromText('LG front load washing machine under ₦550,000');
+  assert.equal(predNgn1?.targetPrice, 550000);
+  assert.equal(predNgn1?.currency, 'NGN');
+
+  const predNgn2 = extractCommercePredicateFromText('below N450k with 15% discount');
+  assert.equal(predNgn2?.targetPrice, 450000);
+  assert.equal(predNgn2?.currency, 'NGN');
+  assert.equal(predNgn2?.maxDropPercentage, 15);
+
+  const predNgn3 = extractCommercePredicateFromText('target price under 1.2m');
+  assert.equal(predNgn3?.targetPrice, 1200000);
+  assert.equal(predNgn3?.currency, 'NGN');
+
+  // 37b. Condition Classifier & "UK Used / Tokunbo" Guard + 37c. Merchant Trust Tiers + 37d. Regional Freight
+  const server = createAppServer();
+  const dispatchHttp = (opts: { method: string; url: string; body?: unknown }) =>
+    new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
+      const req = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : []) as any;
+      req.method = opts.method;
+      req.url = opts.url;
+      req.headers = {
+        host: 'localhost:3456',
+        'content-type': 'application/json',
+        'x-tenant-id': testTenant
+      };
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          resolve({ status: statusCode, json: () => (raw ? JSON.parse(raw) : {}) });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+      server.emit('request', req, res);
+    });
+
+  // Query in Lagos: "LG washing machine under ₦550,000 in Lagos"
+  const searchRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'LG washing machine under ₦550,000 in Lagos',
+      min_rating_confidence: 0.80
+    }
+  });
+  assert.equal(searchRes.status, 200);
+  const searchData = searchRes.json();
+  assert.equal(searchData.resolution_mode, 'immediate_winner');
+  assert.ok(searchData.winning_deal, 'Must identify immediate verified winning deal in Lagos');
+
+  // Jumia Official Store (₦560,000 - 10% promo JUMIA10 = ₦504,000 landed, free Lagos delivery) is the winner
+  assert.equal(searchData.winning_deal.listing.id, 'jumia_lg_official');
+  assert.equal(searchData.winning_deal.landedPrice, 504000);
+  assert.equal(searchData.winning_deal.effectiveShippingCost, 0);
+  assert.equal(searchData.winning_deal.promoSavings, 56000);
+  assert.equal(searchData.winning_deal.destinationZone, 'lagos');
+  assert.equal(searchData.winning_deal.merchantTier, 'official_store');
+
+  // Verify 37b: Anti-Refurbished & UK Used / Tokunbo Guard
+  // The ₦210,000 London Used listing MUST be rejected because query targeted brand_new
+  const ukUsedRejection = searchData.rejected_candidates.find(
+    (r: any) => r.listing.id === 'jiji_london_used_trap'
+  );
+  assert.ok(ukUsedRejection, 'Must reject ₦210,000 UK Used listing when user targets brand_new');
+  assert.equal(ukUsedRejection.stage, 'sku_disambiguation');
+  assert.ok(
+    ukUsedRejection.reason.includes('UK Used / Tokunbo'),
+    'Rejection reason must clearly state UK Used / Tokunbo condition mismatch'
+  );
+
+  // When user explicitly searches for UK Used:
+  const explicitUsedIntent = parseDiscoveryQuery('LG washing machine London used under ₦250k');
+  assert.equal(explicitUsedIntent.targetCondition, 'uk_used');
+
+  // Verify 37c: Merchant Tier Classification & High-Ticket Fraud Mitigation
+  // ₦185,000 Wharf listing on unverified classifieds (> ₦50,000) MUST be rejected by merchant_fraud_guard
+  const fraudRejection = searchData.rejected_candidates.find(
+    (r: any) => r.listing.id === 'jiji_high_ticket_fraud_trap'
+  );
+  assert.ok(fraudRejection, 'Must reject ₦185,000 unverified classifieds listing (> ₦50,000 safe threshold)');
+  assert.equal(fraudRejection.stage, 'merchant_fraud_guard');
+
+  // Verify 37d: Regional Destination Freight Modeling (Lagos vs Abuja vs Interstate)
+  const abujaSearchRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'LG washing machine under ₦550,000 in Abuja',
+      min_rating_confidence: 0.80
+    }
+  });
+  const abujaData = abujaSearchRes.json();
+  const jumiAbuja = abujaData.leaderboard.find((d: any) => d.listing.id === 'jumia_lg_official');
+  assert.ok(jumiAbuja);
+  // Jumia: ₦504,000 + ₦15,000 Abuja shipping = ₦519,000
+  assert.equal(jumiAbuja.landedPrice, 519000);
+  assert.equal(jumiAbuja.effectiveShippingCost, 15000);
+
+  const fouaniAbuja = abujaData.leaderboard.find((d: any) => d.listing.id === 'fouani_lg_direct');
+  assert.ok(fouaniAbuja);
+  // Fouani: ₦525,000 + ₦10,000 Abuja shipping = ₦535,000
+  assert.equal(fouaniAbuja.landedPrice, 535000);
+  assert.equal(fouaniAbuja.effectiveShippingCost, 10000);
+
+  // 37e. Multi-Store Nigerian Cluster Watch (1-to-N Race Watchdog across Jumia & Fouani in NGN)
+  // Target: under ₦480,000 in Lagos (no verified LG store meets it yet: Jumia is ₦504k, Fouani is ₦525k)
+  const mcpClusterRes = (await executeMcpTool(
+    'find_best_deals_and_watch',
+    {
+      query: 'LG front load washing machine under ₦480,000 in Lagos',
+      min_rating_confidence: 0.80,
+      max_cluster_watches: 3
+    },
+    baseUrl,
+    null,
+    testTenant
+  )) as Record<string, any>;
+
+  assert.equal(mcpClusterRes.success, true);
+  assert.equal(mcpClusterRes.resolution_mode, 'cluster_watch_armed');
+  assert.ok(mcpClusterRes.cluster_group_id?.startsWith('cluster_'));
+  assert.equal(
+    mcpClusterRes.created_cluster_watches.length,
+    2,
+    'Provisions cluster watch across the 2 verified LG official distributors (Jumia Official and Fouani Official)'
+  );
+
+  const [watchJumia, watchFouani] = mcpClusterRes.created_cluster_watches;
+  assert.equal(watchJumia.cluster_group_id, mcpClusterRes.cluster_group_id);
+  assert.equal(watchFouani.cluster_group_id, mcpClusterRes.cluster_group_id);
+
+  // Pre-drop check: neither store satisfies <= ₦480,000 yet
+  const preDropCheck = await resolutionEngine.runWatchCheck(watchFouani.id, {
+    bypassCache: true,
+    tenantId: testTenant
+  });
+  assert.equal(preDropCheck?.evaluation.isOpen, false);
+
+  // Simulate Fouani Official launching a flash sale dropping price to ₦465,000 (<= ₦480,000)
+  watchService.updateWatchFields(
+    watchFouani.id,
+    {
+      target_url: `${baseUrl}/demo/deal-portal?store=Fouani+Nigeria+Official&title=LG+AI+DD+8.5kg+Front+Load+Washing+Machine&price=465000.00&list_price=690000.00&rating=4.9&reviews=420&currency=NGN`
+    },
+    testTenant
+  );
+
+  const raceOutcome = await resolutionEngine.runWatchCheck(watchFouani.id, {
+    bypassCache: true,
+    tenantId: testTenant
+  });
+  assert.ok(raceOutcome);
+  assert.equal(raceOutcome.evaluation.isOpen, true);
+  assert.equal(raceOutcome.newlyTriggered, true);
+  assert.equal(raceOutcome.watch.status, 'triggered_open');
+  assert.ok(
+    raceOutcome.notificationsDispatched.length > 0,
+    'Winning Nigerian merchant in cluster race must dispatch notifications'
+  );
+
+  // Verify Jumia Sibling Watch was Atomically Cooled Down
+  const siblingAfter = watchService.getWatchById(watchJumia.id, testTenant);
+  assert.ok(siblingAfter);
+  assert.equal(
+    siblingAfter.status,
+    'cooled_down',
+    'Sibling competing store watch must automatically transition to cooled_down when cluster race is won'
+  );
+  assert.equal(siblingAfter.is_auto_resolve, false);
+  assert.ok(siblingAfter.last_status_summary?.includes('Cluster race won by sibling store watch'));
+});
+
 
 
 

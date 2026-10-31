@@ -180,6 +180,7 @@ export function createAppServer(): http.Server {
         const promoParam = (parsedUrl.searchParams.get('promo') || 'SAVE20').toUpperCase();
         const stockParam = parsedUrl.searchParams.get('stock') === 'out' ? 'OutOfStock' : 'InStock';
         const titleParam = parsedUrl.searchParams.get('title') || 'Apple MacBook Pro M4 Max 16-inch';
+        const currencyParam = (parsedUrl.searchParams.get('currency') || 'USD').toUpperCase();
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!DOCTYPE html>
@@ -202,7 +203,7 @@ export function createAppServer(): http.Server {
       "@type": "Offer",
       "price": "${priceParam.toFixed(2)}",
       "highPrice": "${listPriceParam.toFixed(2)}",
-      "priceCurrency": "USD",
+      "priceCurrency": "${currencyParam}",
       "availability": "https://schema.org/${stockParam}",
       "priceValidUntil": "2026-12-31",
       "seller": {
@@ -215,7 +216,7 @@ export function createAppServer(): http.Server {
 </head>
 <body style="font-family:sans-serif;max-width:680px;margin:48px auto;padding:24px;">
   <h1>${titleParam}</h1>
-  <p>Current Price: <strong>USD ${priceParam.toFixed(2)}</strong> (List: USD ${listPriceParam.toFixed(2)})</p>
+  <p>Current Price: <strong>${currencyParam} ${priceParam.toFixed(2)}</strong> (List: ${currencyParam} ${listPriceParam.toFixed(2)})</p>
   <p>Verified Rating: <strong>${ratingParam} ★</strong> (${reviewsParam} reviews)</p>
   <p>Promo Status: Promo code '${promoParam}' gives 20% off at checkout.</p>
 </body>
@@ -1069,18 +1070,25 @@ export function createAppServer(): http.Server {
           ? body.syndicated_feed_urls.map(String)
           : undefined;
 
+        const destinationZone =
+          body.destination_zone === 'abuja' || body.destination_zone === 'interstate' || body.destination_zone === 'lagos'
+            ? body.destination_zone
+            : undefined;
+
         const result = await dealDiscoveryService.discoverAndWatch({
           query,
           tenantId,
           baseUrl,
           predicateOverrides,
+          destinationZone,
           autoWatchIfAboveTarget: body.auto_watch_if_above_target !== false,
           alwaysCreateWatch: Boolean(body.always_create_watch),
           maxClusterWatches: body.max_cluster_watches ? Number(body.max_cluster_watches) : 3,
           recipientEmail,
           searchOptions: {
             syndicatedFeedPayloads: syndicatedFeeds,
-            syndicatedFeedUrls
+            syndicatedFeedUrls,
+            destinationZone
           }
         });
 

@@ -82,6 +82,74 @@ export function calculateWilsonRatingConfidence(
 }
 
 /**
+ * Parses currency and amount from raw string with support for:
+ * - Symbols: ₦, $, €, £
+ * - Codes: NGN, USD, EUR, GBP, N
+ * - Suffix slang: k/K (thousands), m/M (millions)
+ * - Comma-separated numbers: ₦550,000, 1.2m, 450k, N450k
+ */
+export function parseCurrencyAmount(rawStr: string): { amount: number; currency?: string } | null {
+  if (!rawStr || !rawStr.trim()) return null;
+  const cleaned = rawStr.trim();
+
+  const match = cleaned.match(
+    /(?:(₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*([kmKM])?\b/i
+  );
+  if (!match) return null;
+
+  const rawCurrMarker = match[1] ? match[1].trim() : undefined;
+  const numPart = parseFloat(match[2].replace(/,/g, ''));
+  if (isNaN(numPart) || numPart < 0) return null;
+
+  const multiplierToken = match[3] ? match[3].toLowerCase() : null;
+  let multiplier = 1;
+  if (multiplierToken === 'k') multiplier = 1000;
+  else if (multiplierToken === 'm') multiplier = 1000000;
+
+  const amount = Number((numPart * multiplier).toFixed(2));
+
+  let currency: string | undefined;
+  if (rawCurrMarker) {
+    const upper = rawCurrMarker.toUpperCase();
+    if (upper === '₦' || upper === 'NGN' || upper === 'N') {
+      currency = 'NGN';
+    } else if (upper === '€' || upper === 'EUR') {
+      currency = 'EUR';
+    } else if (upper === '£' || upper === 'GBP') {
+      currency = 'GBP';
+    } else if (upper === '$' || upper === 'USD') {
+      currency = 'USD';
+    }
+  } else if (multiplierToken === 'k' || multiplierToken === 'm') {
+    currency = 'NGN';
+  }
+
+  return { amount, currency };
+}
+
+/**
+ * Formats a numeric currency amount with its appropriate symbol (₦ for NGN, $ for USD, € for EUR, £ for GBP).
+ */
+export function formatCurrencyAmount(amount: number, currency = 'USD'): string {
+  const curr = (currency || 'USD').toUpperCase();
+  const isInt = Number.isInteger(amount);
+  const formattedNum = isInt
+    ? amount.toLocaleString('en-US')
+    : amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  if (curr === 'NGN' || curr === '₦') {
+    return `₦${formattedNum}`;
+  }
+  if (curr === 'EUR' || curr === '€') {
+    return `€${formattedNum}`;
+  }
+  if (curr === 'GBP' || curr === '£') {
+    return `£${formattedNum}`;
+  }
+  return `$${formattedNum}`;
+}
+
+/**
  * Extracts structured commerce state from HTML using Schema.org JSON-LD and SSR __NEXT_DATA__.
  */
 export function extractStructuredCommerceState(
@@ -309,14 +377,15 @@ export function evaluateCommercePredicate(
 
   // 2. Absolute Target Price Predicate: P <= P_target
   if (config.targetPrice !== undefined && config.targetPrice !== null) {
+    const cur = extracted.currency || config.currency || '$';
     if (extracted.currentPrice <= config.targetPrice) {
       reasons.push(
-        `Current price ${extracted.currency || '$'}${extracted.currentPrice.toFixed(2)} is at or below target threshold ${extracted.currency || '$'}${config.targetPrice.toFixed(2)}`
+        `Current price ${formatCurrencyAmount(extracted.currentPrice, cur)} is at or below target threshold ${formatCurrencyAmount(config.targetPrice, cur)}`
       );
     } else {
       satisfied = false;
       reasons.push(
-        `Current price ${extracted.currency || '$'}${extracted.currentPrice.toFixed(2)} exceeds target ${extracted.currency || '$'}${config.targetPrice.toFixed(2)}`
+        `Current price ${formatCurrencyAmount(extracted.currentPrice, cur)} exceeds target ${formatCurrencyAmount(config.targetPrice, cur)}`
       );
     }
   }
@@ -326,6 +395,7 @@ export function evaluateCommercePredicate(
   let savingsAmount: number | null = null;
   const refPrice = config.referencePrice ?? extracted.listPrice;
   const requiredDropPct = config.maxDropPercentage ?? config.minDropPercentage;
+  const cur = extracted.currency || config.currency || '$';
 
   if (refPrice && refPrice > extracted.currentPrice) {
     savingsAmount = Number((refPrice - extracted.currentPrice).toFixed(2));
@@ -334,7 +404,7 @@ export function evaluateCommercePredicate(
     if (requiredDropPct !== undefined && requiredDropPct !== null) {
       if (effectiveDropPercentage >= requiredDropPct) {
         reasons.push(
-          `Price drop of ${effectiveDropPercentage}% exceeds requested threshold of ${requiredDropPct}% (Saved ${extracted.currency || '$'}${savingsAmount})`
+          `Price drop of ${effectiveDropPercentage}% exceeds requested threshold of ${requiredDropPct}% (Saved ${formatCurrencyAmount(savingsAmount, cur)})`
         );
       } else {
         satisfied = false;
@@ -399,33 +469,67 @@ export function extractCommercePredicateFromText(text: string): PricePredicateCo
   const config: PricePredicateConfig = {};
   let matchedAny = false;
 
-  // 1. Target price: "under $1,500", "below $1600", "<= $299.99", "drops to $1200"
+  // 1. Target price: "under ₦550,000", "below 450k", "under $1,500", "below $1600", "<= $299.99", "drops to $1200", "under 1.2m", "below N450k"
   const targetPriceMatch = text.match(
-    /(?:under|below|less\s+than|at\s+or\s+below|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?(?:\s+of)?)\s*(?:(\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i
+    /(?:under|below|less\s+than|at\s+or\s+below|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?(?:\s+of)?)\s*(?:(₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*([kmKM])?\b/i
   );
   if (targetPriceMatch) {
-    const rawCurrency = (targetPriceMatch[1] || '$').toUpperCase();
-    const val = parseFloat(targetPriceMatch[2].replace(/,/g, ''));
+    const rawCurrencyMarker = targetPriceMatch[1];
+    const valRaw = parseFloat(targetPriceMatch[2].replace(/,/g, ''));
+    const multToken = targetPriceMatch[3]?.toLowerCase();
+    const mult = multToken === 'k' ? 1000 : multToken === 'm' ? 1000000 : 1;
+    const val = Number((valRaw * mult).toFixed(2));
+
     if (!isNaN(val) && val > 0) {
       config.targetPrice = val;
-      config.currency =
-        rawCurrency === '€' || rawCurrency === 'EUR'
-          ? 'EUR'
-          : rawCurrency === '£' || rawCurrency === 'GBP'
-            ? 'GBP'
-            : 'USD';
+      if (rawCurrencyMarker) {
+        const upper = rawCurrencyMarker.toUpperCase();
+        if (upper === '₦' || upper === 'NGN' || upper === 'N') {
+          config.currency = 'NGN';
+        } else if (upper === '€' || upper === 'EUR') {
+          config.currency = 'EUR';
+        } else if (upper === '£' || upper === 'GBP') {
+          config.currency = 'GBP';
+        } else {
+          config.currency = 'USD';
+        }
+      } else if (multToken === 'k' || multToken === 'm') {
+        config.currency = 'NGN';
+      } else {
+        config.currency = 'USD';
+      }
       matchedAny = true;
     }
   }
 
-  // 2. Reference / MSRP price: "(was $1,999)", "from $2000", "reference price $3,499", "msrp $999"
+  // 2. Reference / MSRP price: "(was ₦700,000)", "(was $1,999)", "from $2000", "reference price $3,499", "msrp $999", "was 600k"
   const refPriceMatch = text.match(
-    /(?:was|from|msrp|list\s+price|reference\s+price)\s*(?:\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i
+    /(?:was|from|msrp|list\s+price|reference\s+price)\s*(?:(₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*([kmKM])?\b/i
   );
   if (refPriceMatch) {
-    const val = parseFloat(refPriceMatch[1].replace(/,/g, ''));
+    const rawCurrencyMarker = refPriceMatch[1];
+    const valRaw = parseFloat(refPriceMatch[2].replace(/,/g, ''));
+    const multToken = refPriceMatch[3]?.toLowerCase();
+    const mult = multToken === 'k' ? 1000 : multToken === 'm' ? 1000000 : 1;
+    const val = Number((valRaw * mult).toFixed(2));
     if (!isNaN(val) && val > 0) {
       config.referencePrice = val;
+      if (!config.currency) {
+        if (rawCurrencyMarker) {
+          const upper = rawCurrencyMarker.toUpperCase();
+          if (upper === '₦' || upper === 'NGN' || upper === 'N') {
+            config.currency = 'NGN';
+          } else if (upper === '€' || upper === 'EUR') {
+            config.currency = 'EUR';
+          } else if (upper === '£' || upper === 'GBP') {
+            config.currency = 'GBP';
+          } else {
+            config.currency = 'USD';
+          }
+        } else if (multToken === 'k' || multToken === 'm') {
+          config.currency = 'NGN';
+        }
+      }
       matchedAny = true;
     }
   }

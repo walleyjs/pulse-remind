@@ -1,5 +1,13 @@
 import { config } from '../../config/index.ts';
-import type { ParsedDiscoveryIntent } from './disambiguation.ts';
+import type { ParsedDiscoveryIntent, ProductCondition, DestinationZone } from './disambiguation.ts';
+
+export type MerchantTier =
+  | 'official_store'
+  | 'platform_fulfilled'
+  | 'vetted_3p'
+  | 'unverified_classified';
+
+export type { DestinationZone };
 
 export interface DiscoveredCandidateListing {
   id: string;
@@ -17,12 +25,17 @@ export interface DiscoveredCandidateListing {
   promoCode: string | null;
   promoDiscountPercent: number | null;
   promoDiscountAmount: number | null;
+  merchantTier?: MerchantTier;
+  condition?: ProductCondition;
+  warranty?: string;
+  shippingByZone?: Record<DestinationZone, number>;
 }
 
 export interface DiscoverySearchOptions {
   baseUrl?: string;
   syndicatedFeedPayloads?: Array<{ sourceName: string; format: 'rss' | 'json'; content: string }>;
   syndicatedFeedUrls?: string[];
+  destinationZone?: DestinationZone;
 }
 
 export interface DiscoveryProvider {
@@ -211,6 +224,13 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
     intent: ParsedDiscoveryIntent,
     options: DiscoverySearchOptions = {}
   ): Promise<DiscoveredCandidateListing[]> {
+    if (
+      intent.predicate.currency === 'NGN' ||
+      /\b(jumia|konga|slot|kara|fouani|jiji|lagos|abuja|tokunbo|₦|ngn)\b/i.test(intent.rawQuery)
+    ) {
+      return [];
+    }
+
     const baseUrl = (options.baseUrl || config.cloud.renderExternalUrl || 'http://localhost:3456').replace(
       /\/$/,
       ''
@@ -360,7 +380,9 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
         inStock: true,
         promoCode: 'SAVE20',
         promoDiscountPercent: 20, // Net landed = $496.00!
-        promoDiscountAmount: null
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new'
       },
       {
         id: 'wm_bosch_runnerup',
@@ -584,6 +606,437 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
   }
 }
 
+/**
+ * Nigerian Multi-Store Commerce Adapter
+ * Models major Nigerian e-commerce ecosystems (Jumia Nigeria, Konga, Fouani Nigeria, Slot.ng, Kara)
+ * as well as adversarial Classifieds traps (Jiji London Used / Tokunbo listings & unverified classified fraud).
+ */
+export class NigerianCommerceAdapter implements DiscoveryProvider {
+  readonly providerName = 'nigerian_commerce_catalog';
+
+  async search(
+    intent: ParsedDiscoveryIntent,
+    options: DiscoverySearchOptions = {}
+  ): Promise<DiscoveredCandidateListing[]> {
+    const isExplicitNonNgn =
+      intent.predicate.currency &&
+      intent.predicate.currency !== 'NGN' &&
+      !/\b(jumia|konga|slot|kara|fouani|jiji|lagos|abuja|nigeria|tokunbo|₦|ngn)\b/i.test(intent.rawQuery);
+
+    if (isExplicitNonNgn) {
+      return [];
+    }
+
+    const baseUrl = (options.baseUrl || config.cloud.renderExternalUrl || 'http://localhost:3456').replace(
+      /\/$/,
+      ''
+    );
+
+    const buildDemoUrl = (params: {
+      store: string;
+      title: string;
+      price: number;
+      listPrice: number;
+      rating: number;
+      reviews: number;
+      promo?: string;
+      stock?: 'in' | 'out';
+      currency?: string;
+    }) => {
+      const q = new URLSearchParams({
+        store: params.store,
+        title: params.title,
+        price: params.price.toFixed(2),
+        list_price: params.listPrice.toFixed(2),
+        rating: String(params.rating),
+        reviews: String(params.reviews),
+        promo: params.promo || 'NONE',
+        stock: params.stock || 'in',
+        currency: params.currency || 'NGN'
+      });
+      return `${baseUrl}/demo/deal-portal?${q.toString()}`;
+    };
+
+    const targetZone: DestinationZone = options.destinationZone || intent.destinationZone || 'lagos';
+
+    const catalog: DiscoveredCandidateListing[] = [
+      // 1. Jumia Official Store (Fouani/LG) - Official Store with 10% promo JUMIA10
+      // Base: ₦560,000 -> With JUMIA10 (10% off) = ₦504,000 landed in Lagos (Free shipping)
+      {
+        id: 'jumia_lg_official',
+        providerName: this.providerName,
+        title: 'LG 8kg Front Load Washing Machine with Inverter Direct Drive & Steam',
+        price: 560000,
+        shippingCost: 0,
+        listPrice: 720000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Official Store (Fouani/LG)',
+          title: 'LG 8kg Front Load Washing Machine',
+          price: 504000,
+          listPrice: 720000,
+          rating: 4.8,
+          reviews: 240,
+          promo: 'JUMIA10',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Official Store (Fouani/LG)',
+        rating: 4.8,
+        reviewCount: 240,
+        inStock: true,
+        promoCode: 'JUMIA10',
+        promoDiscountPercent: 10,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        warranty: '2 Years Manufacturer Warranty',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 15000,
+          interstate: 35000
+        }
+      },
+
+      // 2. Fouani Nigeria Official (Direct exclusive distributor)
+      // Base: ₦525,000 -> Free Lagos shipping, 2-year warranty, 4.9★ across 420 reviews
+      {
+        id: 'fouani_lg_direct',
+        providerName: this.providerName,
+        title: 'LG AI DD 8.5kg Front Load Washing Machine (TurboWash 360)',
+        price: 525000,
+        shippingCost: 0,
+        listPrice: 690000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Fouani Nigeria Official',
+          title: 'LG AI DD 8.5kg Front Load Washing Machine',
+          price: 525000,
+          listPrice: 690000,
+          rating: 4.9,
+          reviews: 420,
+          currency: 'NGN'
+        }),
+        seller: 'Fouani Nigeria Official',
+        rating: 4.9,
+        reviewCount: 420,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        warranty: '2 Years Official Fouani LG Warranty',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 10000,
+          interstate: 28000
+        }
+      },
+
+      // 3. Konga Retail (Platform Fulfilled)
+      // Base: ₦540,000 -> With KONGA5 (5% off) = ₦513,000, shipping ₦3,500 Lagos
+      {
+        id: 'konga_samsung_retail',
+        providerName: this.providerName,
+        title: 'Samsung 8kg EcoBubble Front Load Washing Machine with Hygiene Steam',
+        price: 540000,
+        shippingCost: 3500,
+        listPrice: 680000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Retail',
+          title: 'Samsung 8kg EcoBubble Front Load Washing Machine',
+          price: 513000,
+          listPrice: 680000,
+          rating: 4.7,
+          reviews: 310,
+          promo: 'KONGA5',
+          currency: 'NGN'
+        }),
+        seller: 'Konga Retail',
+        rating: 4.7,
+        reviewCount: 310,
+        inStock: true,
+        promoCode: 'KONGA5',
+        promoDiscountPercent: 5,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 3500,
+          abuja: 14000,
+          interstate: 30000
+        }
+      },
+
+      // 4. Jumia Express (Hisense Top Loader)
+      {
+        id: 'jumia_hisense_express',
+        providerName: this.providerName,
+        title: 'Hisense 7kg Top Load Automatic Washing Machine with Smart Water Control',
+        price: 380000,
+        shippingCost: 4000,
+        listPrice: 450000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Express',
+          title: 'Hisense 7kg Top Load Automatic Washing Machine',
+          price: 380000,
+          listPrice: 450000,
+          rating: 4.6,
+          reviews: 150,
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Express',
+        rating: 4.6,
+        reviewCount: 150,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 4000,
+          abuja: 12000,
+          interstate: 25000
+        }
+      },
+
+      // 5. Kara Appliance Store (Vetted 3P Merchant)
+      // Base: ₦510,000, shipping: Lagos ₦5,000, Abuja ₦16,000, Interstate ₦35,000
+      {
+        id: 'kara_appliance_direct',
+        providerName: this.providerName,
+        title: 'LG 8kg Front Load Washing Machine Smart Inverter',
+        price: 510000,
+        shippingCost: 5000,
+        listPrice: 620000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Kara Appliance Store',
+          title: 'LG 8kg Front Load Washing Machine Smart Inverter',
+          price: 510000,
+          listPrice: 620000,
+          rating: 4.5,
+          reviews: 95,
+          currency: 'NGN'
+        }),
+        seller: 'Kara Appliance Store',
+        rating: 4.5,
+        reviewCount: 95,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'vetted_3p',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 5000,
+          abuja: 16000,
+          interstate: 35000
+        }
+      },
+
+      // 6. Classifieds London Used / Tokunbo Trap (Jiji Seller)
+      // Price: ₦210,000 (Looks artificially cheap compared to ₦550k new units!)
+      {
+        id: 'jiji_london_used_trap',
+        providerName: this.providerName,
+        title: 'LG 7kg Front Load Washing Machine London Used / Tokunbo Working Perfect',
+        price: 210000,
+        shippingCost: 8000,
+        listPrice: 500000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Alaba Seller on Classifieds',
+          title: 'LG 7kg Front Load Washing Machine London Used',
+          price: 210000,
+          listPrice: 500000,
+          rating: 4.9,
+          reviews: 12,
+          currency: 'NGN'
+        }),
+        seller: 'Alaba Seller on Classifieds',
+        rating: 4.9,
+        reviewCount: 12,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'unverified_classified',
+        condition: 'uk_used',
+        shippingByZone: {
+          lagos: 8000,
+          abuja: 25000,
+          interstate: 40000
+        }
+      },
+
+      // 7. High-Ticket Unverified Classifieds Fraud Trap (Jiji Shady Seller)
+      // Price: ₦185,000 (> ₦50,000 threshold for unverified classifieds fraud mitigation!)
+      {
+        id: 'jiji_high_ticket_fraud_trap',
+        providerName: this.providerName,
+        title: 'Brand New LG Inverter Smart Front Load Washing Machine Direct From Wharf',
+        price: 185000,
+        shippingCost: 5000,
+        listPrice: 600000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'QuickDeals99 on Classifieds',
+          title: 'Brand New LG Inverter Smart Washer Direct Wharf',
+          price: 185000,
+          listPrice: 600000,
+          rating: 5.0,
+          reviews: 2,
+          currency: 'NGN'
+        }),
+        seller: 'QuickDeals99 on Classifieds',
+        rating: 5.0,
+        reviewCount: 2,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'unverified_classified',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 5000,
+          abuja: 15000,
+          interstate: 25000
+        }
+      },
+
+      // 8. Nigerian Accessory Hose Trap (₦6,500)
+      {
+        id: 'ng_hose_trap',
+        providerName: this.providerName,
+        title: 'Universal 3m Flexible Inlet and Drain Hose for Washing Machine',
+        price: 6500,
+        shippingCost: 1500,
+        listPrice: 10000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'PartsDepot Lagos',
+          title: 'Flexible Hose for Washing Machine',
+          price: 6500,
+          listPrice: 10000,
+          rating: 4.7,
+          reviews: 180,
+          currency: 'NGN'
+        }),
+        seller: 'PartsDepot Lagos',
+        rating: 4.7,
+        reviewCount: 180,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'vetted_3p',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 1500,
+          abuja: 3000,
+          interstate: 4500
+        }
+      }
+    ];
+
+    // Compute zone-adjusted shipping cost for each catalog item
+    for (const item of catalog) {
+      if (item.shippingByZone) {
+        item.shippingCost = item.shippingByZone[targetZone] ?? item.shippingCost;
+      }
+    }
+
+    const hasOverlap = catalog.some((item) => {
+      const lower = item.title.toLowerCase();
+      return intent.coreTokens.some((tok) => lower.includes(tok));
+    });
+
+    if (!hasOverlap && intent.coreTokens.length > 0) {
+      const displayTitle = intent.canonicalProductPhrase
+        .split(' ')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+      const baseRef = intent.predicate.targetPrice
+        ? Math.round(intent.predicate.targetPrice * 1.25)
+        : 250000;
+
+      catalog.push(
+        {
+          id: 'dyn_ng_jumia',
+          providerName: this.providerName,
+          title: `${displayTitle} (Official Nigerian Warranty)`,
+          price: Math.round(baseRef * 0.88),
+          shippingCost: targetZone === 'lagos' ? 0 : targetZone === 'abuja' ? 8000 : 15000,
+          listPrice: baseRef,
+          currency: 'NGN',
+          url: buildDemoUrl({
+            store: 'Jumia Official Store',
+            title: `${displayTitle} Official Nigerian Edition`,
+            price: Math.round(baseRef * 0.88 * 0.9),
+            listPrice: baseRef,
+            rating: 4.8,
+            reviews: 320,
+            promo: 'JUMIA10',
+            currency: 'NGN'
+          }),
+          seller: 'Jumia Official Store',
+          rating: 4.8,
+          reviewCount: 320,
+          inStock: true,
+          promoCode: 'JUMIA10',
+          promoDiscountPercent: 10,
+          promoDiscountAmount: null,
+          merchantTier: 'official_store',
+          condition: 'brand_new',
+          shippingByZone: {
+            lagos: 0,
+            abuja: 8000,
+            interstate: 15000
+          }
+        },
+        {
+          id: 'dyn_ng_konga',
+          providerName: this.providerName,
+          title: `${displayTitle} — Konga Retail Fulfilled`,
+          price: Math.round(baseRef * 0.85),
+          shippingCost: targetZone === 'lagos' ? 3000 : targetZone === 'abuja' ? 9000 : 18000,
+          listPrice: baseRef,
+          currency: 'NGN',
+          url: buildDemoUrl({
+            store: 'Konga Retail',
+            title: `${displayTitle} Konga Fulfilled`,
+            price: Math.round(baseRef * 0.85),
+            listPrice: baseRef,
+            rating: 4.7,
+            reviews: 195,
+            currency: 'NGN'
+          }),
+          seller: 'Konga Retail',
+          rating: 4.7,
+          reviewCount: 195,
+          inStock: true,
+          promoCode: null,
+          promoDiscountPercent: null,
+          promoDiscountAmount: null,
+          merchantTier: 'platform_fulfilled',
+          condition: 'brand_new',
+          shippingByZone: {
+            lagos: 3000,
+            abuja: 9000,
+            interstate: 18000
+          }
+        }
+      );
+    }
+
+    return catalog;
+  }
+}
+
 export class DiscoveryProviderRegistry {
   private readonly providers: DiscoveryProvider[] = [];
 
@@ -591,7 +1044,11 @@ export class DiscoveryProviderRegistry {
     if (initialProviders) {
       this.providers.push(...initialProviders);
     } else {
-      this.providers.push(new SyndicatedDealAdapter(), new SimulatedMultiStoreAdapter());
+      this.providers.push(
+        new SyndicatedDealAdapter(),
+        new SimulatedMultiStoreAdapter(),
+        new NigerianCommerceAdapter()
+      );
     }
   }
 
