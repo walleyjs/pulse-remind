@@ -3226,6 +3226,273 @@ test('37. Nigerian E-Commerce Localization: NGN & Slang Tokenizer, UK-Used Guard
   assert.ok(siblingAfter.last_status_summary?.includes('Cluster race won by sibling store watch'));
 });
 
+test('38. Live Multi-Store Deal Scourer & Canonical Spec Matcher: Hard Dimension Invariance, Wire Schema Extraction, Freight Landed Cost, and #1 Deal Selection', async () => {
+  const { Readable } = await import('node:stream');
+  const {
+    parseDiscoveryQuery,
+    evaluateCandidateConformance
+  } = await import('../src/internal/discovery/disambiguation.ts');
+  const {
+    parseSchemaOrgAndSsrFromHtml
+  } = await import('../src/internal/discovery/provider.ts');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const { executeMcpTool } = await import('../src/pkg/mcp/tools.ts');
+
+  const baseUrl = 'http://localhost:3456';
+  const testTenant = 'tenant_live_scourer_' + Date.now();
+
+  // 38a. Canonical Spec Decomposer: Multi-Vector Spec Extraction for "Hisense Front Load 7kg Washing Machine"
+  const rawQuery = 'Hisense Front Load 7kg Washing Machine';
+  const intent = parseDiscoveryQuery(rawQuery);
+
+  assert.equal(intent.spec?.brand, 'Hisense');
+  assert.equal(intent.spec?.formFactor, 'front_load');
+  assert.equal(intent.spec?.capacityValue, 7);
+  assert.equal(intent.spec?.capacityUnit, 'kg');
+  assert.equal(intent.spec?.productSubcategory, 'washing_machine');
+
+  // 38b. Hard Dimension Invariance: Reject Top Load, 6kg, and Accessories
+  // Candidate 1: Hisense 7kg Top Load -> MUST be rejected (Form factor mismatch: requires front_load, got top_load)
+  const evalTopLoad = evaluateCandidateConformance(
+    intent,
+    'Hisense 7kg Top Load Automatic Washing Machine with Smart Water Control',
+    320000
+  );
+  assert.equal(evalTopLoad.conformant, false);
+  assert.ok(
+    evalTopLoad.rejectionReason?.includes('Form factor mismatch'),
+    'Must reject top load listing for front load query'
+  );
+  assert.ok(
+    evalTopLoad.rejectionReason?.includes('front_load') && evalTopLoad.rejectionReason?.includes('top_load'),
+    'Rejection reason must detail required front_load vs candidate top_load'
+  );
+
+  // Candidate 2: Hisense 6kg Front Load -> MUST be rejected (Capacity mismatch: requires 7kg, got 6kg)
+  const eval6kg = evaluateCandidateConformance(
+    intent,
+    'Hisense 6kg Front Load Washing Machine with Quick Wash',
+    310000
+  );
+  assert.equal(eval6kg.conformant, false);
+  assert.ok(
+    eval6kg.rejectionReason?.includes('Capacity mismatch'),
+    'Must reject 6kg listing for 7kg query'
+  );
+  assert.ok(
+    eval6kg.rejectionReason?.includes('7kg') && eval6kg.rejectionReason?.includes('6kg'),
+    'Rejection reason must detail required 7kg vs candidate 6kg'
+  );
+
+  // Candidate 3: Washing Machine Cover -> MUST be rejected (Accessory trap)
+  const evalCover = evaluateCandidateConformance(
+    intent,
+    'Waterproof Dust and Sun Protective Cover for Hisense 7kg Front Load Washing Machine',
+    8500
+  );
+  assert.equal(evalCover.conformant, false);
+  assert.ok(
+    evalCover.rejectionReason?.includes('Accessory') || evalCover.rejectionReason?.includes('cover'),
+    'Must reject washing machine protective cover accessory'
+  );
+
+  // Candidate 4: Exact Match Hisense 7kg Front Load -> MUST be conformant!
+  const evalMatch = evaluateCandidateConformance(
+    intent,
+    'Hisense 7kg Front Load Washing Machine with Pure Steam & Inverter (WFQP7012EVM)',
+    365000
+  );
+  assert.equal(evalMatch.conformant, true);
+  assert.equal(evalMatch.rejectionReason, null);
+  assert.ok(evalMatch.similarityScore > 0.8, 'High similarity score on exact spec match');
+
+  // 38c. Wire Protocol & Schema.org JSON-LD / SSR Hydration Parser Verification
+  const sampleFouaniHtml = `
+    <html>
+      <head>
+        <title>Hisense 7kg Front Load Washer</title>
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org/",
+          "@type": "Product",
+          "name": "Hisense 7kg Front Load Washing Machine with Pure Steam & Inverter (WFQP7012EVM)",
+          "offers": {
+            "@type": "Offer",
+            "price": "365000",
+            "priceCurrency": "NGN",
+            "availability": "https://schema.org/InStock",
+            "url": "https://fouani.com/ng/hisense-7kg-front-load-washing-machine-wfqp7012evm"
+          },
+          "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": "4.9",
+            "reviewCount": "340"
+          }
+        }
+        </script>
+      </head>
+      <body>
+        <h1>Hisense 7kg Front Load Washer</h1>
+      </body>
+    </html>
+  `;
+  const parsedFromHtml = parseSchemaOrgAndSsrFromHtml(
+    sampleFouaniHtml,
+    'https://fouani.com/ng/catalogsearch/result/?q=hisense',
+    'Fouani Nigeria Official'
+  );
+  assert.equal(parsedFromHtml.length, 1);
+  assert.equal(parsedFromHtml[0].price, 365000);
+  assert.equal(parsedFromHtml[0].currency, 'NGN');
+  assert.equal(parsedFromHtml[0].inStock, true);
+  assert.equal(parsedFromHtml[0].seller, 'Fouani Nigeria Official');
+  assert.equal(parsedFromHtml[0].rating, 4.9);
+  assert.equal(parsedFromHtml[0].reviewCount, 340);
+  assert.equal(
+    parsedFromHtml[0].url,
+    'https://fouani.com/ng/hisense-7kg-front-load-washing-machine-wfqp7012evm'
+  );
+
+  // 38d. End-to-End Live Deal Scouring via HTTP API & Best Deal Selection (Lagos)
+  const server = createAppServer();
+  const dispatchHttp = (opts: { method: string; url: string; body?: unknown }) =>
+    new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
+      const req = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : []) as any;
+      req.method = opts.method;
+      req.url = opts.url;
+      req.headers = {
+        host: 'localhost:3456',
+        'content-type': 'application/json',
+        'x-tenant-id': testTenant
+      };
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          resolve({ status: statusCode, json: () => (raw ? JSON.parse(raw) : {}) });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+      server.emit('request', req, res);
+    });
+
+  const searchLagosRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'Hisense Front Load 7kg Washing Machine in Lagos',
+      min_rating_confidence: 0.80
+    }
+  });
+
+  assert.equal(searchLagosRes.status, 200);
+  const lagosData = searchLagosRes.json();
+  assert.equal(lagosData.resolution_mode, 'immediate_winner');
+  assert.ok(lagosData.winning_deal, 'Must identify winning deal in Lagos');
+
+  // Verify #1 Best Deal is Fouani Nigeria Official:
+  // Base ₦365,000 + ₦0 Lagos shipping = ₦365,000 Total Landed Cost (Lowest verified deal!)
+  const winner = lagosData.winning_deal;
+  assert.equal(winner.listing.seller, 'Fouani Nigeria Official');
+  assert.equal(winner.landedPrice, 365000);
+  assert.equal(winner.effectiveShippingCost, 0);
+  assert.equal(winner.merchantTier, 'official_store');
+  assert.ok(winner.wilsonConfidence >= 0.85, 'Wilson confidence must be >= 85%');
+  assert.ok(winner.listing.url.includes('http'), 'Must provide actionable checkout link');
+
+  // Verify Traps were rejected in live search:
+  const rejectedIds = lagosData.rejected_candidates.map((r: any) => r.listing.id);
+  assert.ok(
+    rejectedIds.includes('jumia_hisense_topload_trap') ||
+      lagosData.rejected_candidates.some((r: any) => r.reason.includes('Form factor mismatch')),
+    'Must reject Top Load candidate in Lagos search'
+  );
+  assert.ok(
+    rejectedIds.includes('konga_hisense_6kg_trap') ||
+      lagosData.rejected_candidates.some((r: any) => r.reason.includes('Capacity mismatch')),
+    'Must reject 6kg candidate in Lagos search'
+  );
+  assert.ok(
+    rejectedIds.includes('slot_hisense_cover_trap') ||
+      lagosData.rejected_candidates.some((r: any) => r.reason.includes('Accessory') || r.reason.includes('cover')),
+    'Must reject washer cover candidate in Lagos search'
+  );
+
+  // Verify Leaderboard ranking order in Lagos:
+  // 1st: Fouani (₦365,000)
+  // 2nd: Jumia (₦390,000 - 5% = ₦370,500 + ₦4,000 = ₦374,500)
+  // 3rd: Konga (₦385,000 + ₦3,500 = ₦388,500)
+  const lb = lagosData.leaderboard;
+  assert.ok(lb.length >= 3, 'Must rank at least 3 verified store competitors');
+  assert.equal(lb[0].listing.seller, 'Fouani Nigeria Official');
+  assert.equal(lb[0].landedPrice, 365000);
+  assert.equal(lb[1].listing.seller, 'Jumia Official Store (Hisense)');
+  assert.equal(lb[1].landedPrice, 374500);
+  assert.equal(lb[2].listing.seller, 'Konga Retail');
+  assert.equal(lb[2].landedPrice, 388500);
+
+  // 38e. Regional Destination Freight Modeling (Abuja)
+  const searchAbujaRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'Hisense Front Load 7kg Washing Machine in Abuja',
+      min_rating_confidence: 0.80
+    }
+  });
+  const abujaData = searchAbujaRes.json();
+  const fouaniAbuja = abujaData.leaderboard.find((d: any) => d.listing.seller === 'Fouani Nigeria Official');
+  assert.ok(fouaniAbuja);
+  // Fouani: ₦365,000 + ₦12,000 Abuja freight = ₦377,000
+  assert.equal(fouaniAbuja.landedPrice, 377000);
+  assert.equal(fouaniAbuja.effectiveShippingCost, 12000);
+
+  const jumiaAbuja = abujaData.leaderboard.find((d: any) => d.listing.seller === 'Jumia Official Store (Hisense)');
+  assert.ok(jumiaAbuja);
+  // Jumia: ₦370,500 + ₦14,000 Abuja freight = ₦384,500
+  assert.equal(jumiaAbuja.landedPrice, 384500);
+  assert.equal(jumiaAbuja.effectiveShippingCost, 14000);
+
+  // 38f. Target Price Threshold & 1-to-N Cluster Watch Provisioning via MCP
+  // Target: under ₦350,000 in Lagos (no store currently meets <= ₦350k: lowest is Fouani at ₦365k)
+  const mcpRes = (await executeMcpTool(
+    'find_best_deals_and_watch',
+    {
+      query: 'Hisense Front Load 7kg Washing Machine under ₦350,000 in Lagos',
+      min_rating_confidence: 0.80,
+      max_cluster_watches: 3
+    },
+    baseUrl,
+    null,
+    testTenant
+  )) as Record<string, any>;
+
+  assert.equal(mcpRes.success, true);
+  assert.equal(mcpRes.resolution_mode, 'cluster_watch_armed');
+  assert.ok(mcpRes.cluster_group_id?.startsWith('cluster_'));
+  assert.ok(
+    mcpRes.created_cluster_watches.length >= 2,
+    'Arms cluster price watch across the top competing stores (Fouani, Jumia, Konga)'
+  );
+  assert.ok(
+    mcpRes.action_checklist.some((step: string) => step.includes('₦350,000')),
+    'Action checklist must reference the ₦350,000 target threshold'
+  );
+});
+
 
 
 

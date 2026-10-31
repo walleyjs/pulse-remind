@@ -569,6 +569,9 @@ export async function executeMcpTool(
       const primaryWatch = discovery.created_cluster_watches[0] || null;
       const savedEmail = providedEmail || notificationService.getSavedDefaultEmail(tenantId) || null;
       const hasBoundEmail = Boolean(savedEmail && !isDisallowedAmbientEmail(savedEmail));
+      const actionChecklist = primaryWatch
+        ? primaryWatch.chat_context.split('\n').filter(Boolean)
+        : [];
 
       return {
         success: true,
@@ -579,6 +582,7 @@ export async function executeMcpTool(
         rejected_candidates: discovery.rejected_candidates,
         cluster_group_id: discovery.cluster_group_id,
         created_cluster_watches: discovery.created_cluster_watches,
+        action_checklist: actionChecklist,
         delivery_status: hasBoundEmail ? 'BOUND_READY' : 'ACTION_REQUIRED_ASK_USER_FOR_EMAIL',
         destination_status: hasBoundEmail ? 'bound' : 'unbound',
         bound_email: hasBoundEmail ? savedEmail : null,

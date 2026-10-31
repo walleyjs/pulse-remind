@@ -97,9 +97,18 @@ export function rankDiscoveredCandidates(
     }
     promoSavings = Number(promoSavings.toFixed(2));
 
-    const effectiveShippingCost = listing.shippingByZone
-      ? (listing.shippingByZone[targetZone] ?? listing.shippingCost)
-      : (listing.shippingCost || 0);
+    let effectiveShippingCost = listing.shippingCost || 0;
+    if (listing.shippingByZone) {
+      effectiveShippingCost = listing.shippingByZone[targetZone] ?? listing.shippingCost;
+    } else if (
+      listing.currency === 'NGN' &&
+      (intent.domainClass === 'appliance' || intent.spec?.productSubcategory === 'washing_machine')
+    ) {
+      // Freight modeling for heavy appliances (60–70kg) across destination zones in Nigeria
+      if (targetZone === 'lagos') effectiveShippingCost = listing.shippingCost || 3500;
+      else if (targetZone === 'abuja') effectiveShippingCost = listing.shippingCost ? listing.shippingCost + 9000 : 13000;
+      else if (targetZone === 'interstate') effectiveShippingCost = listing.shippingCost ? listing.shippingCost + 20000 : 26000;
+    }
 
     const landedPrice = Number(
       Math.max(0, listing.price + effectiveShippingCost - promoSavings).toFixed(2)

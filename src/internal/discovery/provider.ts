@@ -5,6 +5,17 @@ import {
   type ProductCondition,
   type DestinationZone
 } from './disambiguation.ts';
+import {
+  LiveNigerianScourerAdapter,
+  fetchLiveHtml,
+  parseSchemaOrgAndSsrFromHtml
+} from './live-scourer.ts';
+
+export {
+  LiveNigerianScourerAdapter,
+  fetchLiveHtml,
+  parseSchemaOrgAndSsrFromHtml
+};
 
 export type MerchantTier =
   | 'official_store'
@@ -814,6 +825,178 @@ export class NigerianCommerceAdapter implements DiscoveryProvider {
         }
       },
 
+      // 4b. Fouani Nigeria Official (Hisense 7kg Front Load with Inverter & Pure Steam WFQP7012EVM)
+      {
+        id: 'fouani_hisense_7kg_front_load',
+        providerName: this.providerName,
+        title: 'Hisense 7kg Front Load Washing Machine with Pure Steam & Inverter (WFQP7012EVM)',
+        price: 365000,
+        shippingCost: 0,
+        listPrice: 420000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Fouani Nigeria Official',
+          title: 'Hisense 7kg Front Load Washing Machine (WFQP7012EVM)',
+          price: 365000,
+          listPrice: 420000,
+          rating: 4.9,
+          reviews: 340,
+          currency: 'NGN'
+        }),
+        seller: 'Fouani Nigeria Official',
+        rating: 4.9,
+        reviewCount: 340,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        warranty: '2 Years Official Fouani Manufacturer Warranty',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 12000,
+          interstate: 25000
+        }
+      },
+
+      // 4c. Jumia Official Store (Hisense 7kg Front Load)
+      {
+        id: 'jumia_hisense_7kg_front_load',
+        providerName: this.providerName,
+        title: 'Hisense 7kg Front Load Automatic Washing Machine WFQP7012EVM - PureJet & Steam',
+        price: 390000,
+        shippingCost: 4000,
+        listPrice: 440000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Official Store (Hisense)',
+          title: 'Hisense 7kg Front Load Automatic Washing Machine WFQP7012EVM',
+          price: 370500,
+          listPrice: 440000,
+          rating: 4.8,
+          reviews: 280,
+          promo: 'JUMIA5',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Official Store (Hisense)',
+        rating: 4.8,
+        reviewCount: 280,
+        inStock: true,
+        promoCode: 'JUMIA5',
+        promoDiscountPercent: 5,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 4000,
+          abuja: 14000,
+          interstate: 28000
+        }
+      },
+
+      // 4d. Konga Retail (Hisense 7kg Front Load)
+      {
+        id: 'konga_hisense_7kg_front_load',
+        providerName: this.providerName,
+        title: 'Hisense 7kg Front Load Washing Machine Inverter Direct Drive',
+        price: 385000,
+        shippingCost: 3500,
+        listPrice: 435000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Retail',
+          title: 'Hisense 7kg Front Load Washing Machine Inverter',
+          price: 385000,
+          listPrice: 435000,
+          rating: 4.8,
+          reviews: 210,
+          currency: 'NGN'
+        }),
+        seller: 'Konga Retail',
+        rating: 4.8,
+        reviewCount: 210,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 3500,
+          abuja: 13000,
+          interstate: 26000
+        }
+      },
+
+      // 4e. Konga 6kg Front Load Trap (Must be excluded by Capacity Invariance!)
+      {
+        id: 'konga_hisense_6kg_trap',
+        providerName: this.providerName,
+        title: 'Hisense 6kg Front Load Washing Machine with Quick Wash',
+        price: 310000,
+        shippingCost: 3500,
+        listPrice: 380000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Retail',
+          title: 'Hisense 6kg Front Load Washing Machine Quick Wash',
+          price: 310000,
+          listPrice: 380000,
+          rating: 4.7,
+          reviews: 165,
+          currency: 'NGN'
+        }),
+        seller: 'Konga Retail',
+        rating: 4.7,
+        reviewCount: 165,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 3500,
+          abuja: 11000,
+          interstate: 22000
+        }
+      },
+
+      // 4f. Slot Appliance Dust Cover Trap (Must be excluded by Anti-Accessory guard!)
+      {
+        id: 'slot_hisense_cover_trap',
+        providerName: this.providerName,
+        title: 'Waterproof Dust and Sun Protective Cover for Hisense 7kg Front Load Washing Machine',
+        price: 8500,
+        shippingCost: 1500,
+        listPrice: 12000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'ApplianceParts Lagos',
+          title: 'Protective Cover for Hisense 7kg Front Load Washing Machine',
+          price: 8500,
+          listPrice: 12000,
+          rating: 4.6,
+          reviews: 80,
+          currency: 'NGN'
+        }),
+        seller: 'ApplianceParts Lagos',
+        rating: 4.6,
+        reviewCount: 80,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'vetted_3p',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 1500,
+          abuja: 3000,
+          interstate: 5000
+        }
+      },
+
       // 5. Kara Appliance Store (Vetted 3P Merchant)
       // Base: ₦510,000, shipping: Lagos ₦5,000, Abuja ₦16,000, Interstate ₦35,000
       {
@@ -1447,10 +1630,16 @@ export class DiscoveryProviderRegistry {
     const settled = await Promise.allSettled(
       this.providers.map((p) => p.search(intent, options))
     );
+    const seenIds = new Set<string>();
     const merged: DiscoveredCandidateListing[] = [];
     for (const res of settled) {
       if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-        merged.push(...res.value);
+        for (const item of res.value) {
+          if (!seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            merged.push(item);
+          }
+        }
       }
     }
     return merged;

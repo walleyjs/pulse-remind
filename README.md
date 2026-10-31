@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.6.0-green.svg)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero_NPM-brightgreen.svg)](#zero-dependency-architecture)
-[![Tests](https://img.shields.io/badge/Tests-37%2F37_Passing-success.svg)](tests/e2e.test.ts)
+[![Tests](https://img.shields.io/badge/Tests-38%2F38_Passing-success.svg)](tests/e2e.test.ts)
 [![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-purple.svg)](https://modelcontextprotocol.io/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Stage-blue.svg)](Dockerfile)
 
@@ -199,10 +199,10 @@ PulseRemind runs out of the box with zero external configuration. To enable clou
 
 ## Verification & Test Matrix
 
-PulseRemind includes a comprehensive 37-suite integration test verifying everything from multi-tenant boundaries to virtual-time leaps and localized multi-store deal discovery:
+PulseRemind includes a comprehensive 38-suite integration test verifying everything from multi-tenant boundaries to virtual-time leaps, localized multi-store deal discovery, and exact canonical spec matching:
 
 ```bash
-# Run all 37 tests in offline memory mode
+# Run all 38 tests in offline memory mode
 npm test
 ```
 
@@ -210,12 +210,12 @@ npm test
 ✔ 1. Extracts future-dated scholarship plans from AI transcripts
 ✔ 2. MCP tools create watch, detect closed state, and fire alerts
 ...
-✔ 34. Temporal Commerce Predicate Engine: Price Drops, Wilson Score Rating Quality, and Promo Verification
 ✔ 35. Full-Stack Commerce Watch Lifecycle: NL Extraction, SQLite Persistence, Multi-Poll Hysteresis, and Outbox Dispatch
 ✔ 36. Multi-Platform Deal Discovery & Comparison Engine: Anti-Accessory Disambiguation, Landed Cost Ranking, Wilson Fraud Filter, and 1-to-N Cluster Watch Cooldown
 ✔ 37. Nigerian E-Commerce Localization: NGN & Slang Tokenizer, UK-Used Guard, Merchant Trust Tiers, Regional Freight, and Multi-Store Cluster Race
+✔ 38. Live Multi-Store Deal Scourer & Canonical Spec Matcher: Hard Dimension Invariance, Wire Schema Extraction, Freight Landed Cost, and #1 Deal Selection
 
-ℹ tests 37 | suites 0 | pass 37 | fail 0
+ℹ tests 38 | suites 0 | pass 38 | fail 0
 ```
 
 ---
@@ -225,7 +225,7 @@ npm test
 We welcome community contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Before opening a pull request, verify that:
-1. All 37 integration tests pass via `npm test`.
+1. All 38 integration tests pass via `npm test`.
 2. No third-party npm runtime dependencies are added.
 3. Code strictly adheres to native TypeScript and Node.js standard library APIs.
 

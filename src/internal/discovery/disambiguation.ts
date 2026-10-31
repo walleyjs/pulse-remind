@@ -8,6 +8,26 @@ export type ProductDomainClass = 'appliance' | 'computing' | 'electronics' | 'se
 export type ProductCondition = 'brand_new' | 'uk_used' | 'refurbished' | 'any';
 export type DestinationZone = 'lagos' | 'abuja' | 'interstate';
 
+export type FormFactor =
+  | 'front_load'
+  | 'top_load'
+  | 'twin_tub'
+  | 'standing'
+  | 'ceiling'
+  | 'rechargeable'
+  | 'portable'
+  | 'split'
+  | string;
+
+export interface CanonicalProductSpec {
+  brand: string | null;
+  formFactor: FormFactor | null;
+  capacityValue: number | null;
+  capacityUnit: string | null;
+  productSubcategory: string | null;
+  mpn: string | null;
+}
+
 export interface ParsedDiscoveryIntent {
   rawQuery: string;
   canonicalProductPhrase: string;
@@ -20,6 +40,7 @@ export interface ParsedDiscoveryIntent {
   minPlausiblePriceFloor: number;
   negativeAccessoryTokens: string[];
   predicate: CommercePredicateConfig;
+  spec?: CanonicalProductSpec;
 }
 
 export interface ConformanceEvaluation {
@@ -221,17 +242,112 @@ export const SYNONYM_MAP: Record<string, string[]> = {
   internet: ['internet', 'broadband', 'wifi'],
   microwave: ['microwave', 'oven'],
   headphones: ['headphones', 'headset', 'earbuds'],
-  tokunbo: ['used', 'uk', 'tokunbo']
+  tokunbo: ['used', 'uk', 'tokunbo'],
+  front: ['front', 'frontload', 'frontloader'],
+  top: ['top', 'topload', 'toploader'],
+  load: ['load', 'loading', 'loader']
 };
 
 export function tokenizeNormalized(input: string): string[] {
   return input
     .toLowerCase()
     .replace(/['’]/g, '')
+    .replace(/([0-9]+(?:\.[0-9]+)?)\s+(kg|l|inch|hp|gb|tb|mah|w|v)\b/gi, '$1$2')
     .replace(/[^a-z0-9.\-+]+/g, ' ')
     .split(/\s+/)
     .map((t) => t.replace(/^[.\-]+|[.\-]+$/g, ''))
     .filter((t) => t.length >= 2);
+}
+
+const KNOWN_BRANDS_SET = new Set(KNOWN_BRANDS);
+
+export function detectFormFactor(text: string): FormFactor | null {
+  if (/\b(?:front\s*-?\s*load(?:er|ing)?)\b/i.test(text)) return 'front_load';
+  if (/\b(?:top\s*-?\s*load(?:er|ing)?)\b/i.test(text)) return 'top_load';
+  if (/\b(?:twin\s*-?\s*tub|semi\s*-?\s*auto(?:matic)?|double\s*-?\s*tub)\b/i.test(text)) return 'twin_tub';
+  if (/\b(?:standing|satnding|pedestal)\b/i.test(text)) return 'standing';
+  if (/\b(?:ceiling|orbit)\b/i.test(text)) return 'ceiling';
+  if (/\b(?:rechargeable)\b/i.test(text)) return 'rechargeable';
+  if (/\b(?:portable|mifi|pocket)\b/i.test(text)) return 'portable';
+  if (/\b(?:split)\b/i.test(text)) return 'split';
+  return null;
+}
+
+export function detectCapacity(text: string): { value: number; unit: string } | null {
+  const m = text.match(
+    /\b([0-9]+(?:\.[0-9]+)?)\s*(kg|kilograms?|l|liters?|litres?|inch(?:es)?|"|hp|horsepower|gb|gigabytes?|burners?|burner)\b/i
+  );
+  if (m) {
+    const val = parseFloat(m[1]);
+    let unit = m[2].toLowerCase();
+    if (unit === 'kilograms' || unit === 'kilogram') unit = 'kg';
+    if (unit === 'liters' || unit === 'litres' || unit === 'liter' || unit === 'litre') unit = 'l';
+    if (unit === 'inches' || unit === '"') unit = 'inch';
+    if (unit === 'horsepower') unit = 'hp';
+    if (unit === 'gigabytes' || unit === 'gigabyte') unit = 'gb';
+    if (unit === 'burners') unit = 'burner';
+    return { value: val, unit };
+  }
+  return null;
+}
+
+export function detectProductSubcategory(text: string): string | null {
+  if (/\b(?:washing\s+machine|washer|washers)\b/i.test(text)) return 'washing_machine';
+  if (/\b(?:standing\s+fan|fan|fans|satnding)\b/i.test(text)) return 'standing_fan';
+  if (/\b(?:refrigerator|fridge|freezer)\b/i.test(text)) return 'refrigerator';
+  if (/\b(?:microwave|microwave\s+oven)\b/i.test(text)) return 'microwave';
+  if (/\b(?:gas\s+cooker|cooker|stove|cooke)\b/i.test(text)) return 'gas_cooker';
+  if (/\b(?:television|tv|tvr|oled|smart\s+tv)\b/i.test(text)) return 'television';
+  if (/\b(?:router|mifi|modem)\b/i.test(text)) return 'router';
+  if (/\b(?:laptop|macbook|notebook)\b/i.test(text)) return 'laptop';
+  return null;
+}
+
+export function detectMpn(text: string): string | null {
+  const tokens = text.match(/\b[A-Za-z0-9\-_]{5,15}\b/g) || [];
+  for (const t of tokens) {
+    if (
+      /[A-Za-z]/.test(t) &&
+      /[0-9]/.test(t) &&
+      !/^[0-9]+(?:\.[0-9]+)?(?:kg|l|inch|hp|gb|tb|mah|w|v)$/i.test(t) &&
+      !/\b(?:4g|5g|50gb|20l|7kg|8kg|8\.5kg|18inch|43inch|hdr10)\b/i.test(t)
+    ) {
+      return t.toUpperCase();
+    }
+  }
+  return null;
+}
+
+export function extractCanonicalProductSpec(text: string): CanonicalProductSpec {
+  const norm = text.toLowerCase();
+  let brand: string | null = null;
+  const words = norm.split(/[^a-z0-9]+/);
+  for (const w of words) {
+    if (KNOWN_BRANDS_SET.has(w)) {
+      brand =
+        w.toUpperCase() === 'LG' ||
+        w.toUpperCase() === 'GE' ||
+        w.toUpperCase() === 'HP' ||
+        w.toUpperCase() === 'TCL'
+          ? w.toUpperCase()
+          : w.charAt(0).toUpperCase() + w.slice(1);
+      break;
+    }
+  }
+
+  const formFactor = detectFormFactor(text);
+  const cap = detectCapacity(text);
+  const subcategory = detectProductSubcategory(text);
+  const mpn = detectMpn(text);
+
+  return {
+    brand,
+    formFactor,
+    capacityValue: cap?.value ?? null,
+    capacityUnit: cap?.unit ?? null,
+    productSubcategory: subcategory,
+    mpn
+  };
 }
 
 function inferDomainClass(tokens: string[]): {
@@ -334,19 +450,29 @@ export function parseDiscoveryQuery(
     (t) => !STOP_WORDS.has(t) && !/^[0-9]+$/.test(t)
   );
 
-  let brand: string | null = null;
-  for (const t of coreTokens) {
-    if (KNOWN_BRANDS.includes(t)) {
-      brand = t.toUpperCase() === 'LG' || t.toUpperCase() === 'GE' || t.toUpperCase() === 'HP' || t.toUpperCase() === 'TCL'
-        ? t.toUpperCase()
-        : t.charAt(0).toUpperCase() + t.slice(1);
-      break;
+  const spec = extractCanonicalProductSpec(rawQuery);
+  let brand: string | null = spec.brand;
+  if (!brand) {
+    for (const t of coreTokens) {
+      if (KNOWN_BRANDS.includes(t)) {
+        brand =
+          t.toUpperCase() === 'LG' ||
+          t.toUpperCase() === 'GE' ||
+          t.toUpperCase() === 'HP' ||
+          t.toUpperCase() === 'TCL'
+            ? t.toUpperCase()
+            : t.charAt(0).toUpperCase() + t.slice(1);
+        break;
+      }
     }
   }
 
-  // Model tokens contain both letters and digits (e.g. wm4000hwa, m4, 16-inch, rtx5090)
+  // Model tokens contain both letters and digits (e.g. wm4000hwa, m4, rtx5090), excluding pure capacity tokens (e.g. 7kg, 43inch)
   const modelTokens = coreTokens.filter(
-    (t) => /[a-z]/i.test(t) && /[0-9]/.test(t)
+    (t) =>
+      /[a-z]/i.test(t) &&
+      /[0-9]/.test(t) &&
+      !/^[0-9]+(?:\.[0-9]+)?(?:kg|l|inch|hp|gb|tb|mah|w|v)$/i.test(t)
   );
 
   // Exclude any negative accessory token that the user explicitly asked for!
@@ -380,7 +506,8 @@ export function parseDiscoveryQuery(
     destinationZone,
     minPlausiblePriceFloor: Number(effectiveFloor.toFixed(2)),
     negativeAccessoryTokens,
-    predicate: mergedPredicate
+    predicate: mergedPredicate,
+    spec
   };
 }
 
@@ -468,6 +595,68 @@ export function evaluateCandidateConformance(
         similarityScore: 0,
         matchedTokens: [],
         rejectionReason: `Model specification mismatch: missing "${modelTok}"`
+      };
+    }
+  }
+
+  // 4b. Canonical Spec Matcher & Hard Dimension Invariance Guards
+  if (
+    intent.spec &&
+    (intent.spec.formFactor ||
+      intent.spec.capacityValue !== null ||
+      intent.spec.productSubcategory ||
+      intent.spec.mpn)
+  ) {
+    const candSpec = extractCanonicalProductSpec(candidateTitle);
+
+    // Hard Form Factor Invariance:
+    // If query specifies form factor (e.g. front_load), candidate must not be another explicit form factor (e.g. top_load or twin_tub)
+    if (intent.spec.formFactor) {
+      if (candSpec.formFactor && candSpec.formFactor !== intent.spec.formFactor) {
+        return {
+          conformant: false,
+          similarityScore: 0,
+          matchedTokens: [],
+          rejectionReason: `Form factor mismatch: query requires ${intent.spec.formFactor}, but candidate is ${candSpec.formFactor}`
+        };
+      }
+    }
+
+    // Hard Capacity Invariance:
+    // If query specifies capacity (e.g. 7kg), candidate must not have a different capacity in the same unit (e.g. 6kg or 8kg)
+    if (intent.spec.capacityValue !== null && intent.spec.capacityUnit) {
+      if (candSpec.capacityValue !== null && candSpec.capacityUnit === intent.spec.capacityUnit) {
+        const diff = Math.abs(candSpec.capacityValue - intent.spec.capacityValue);
+        if (diff > 0.1) {
+          return {
+            conformant: false,
+            similarityScore: 0,
+            matchedTokens: [],
+            rejectionReason: `Capacity mismatch: query requires ${intent.spec.capacityValue}${intent.spec.capacityUnit}, but candidate is ${candSpec.capacityValue}${candSpec.capacityUnit}`
+          };
+        }
+      }
+    }
+
+    // Subcategory Invariance Guard:
+    if (intent.spec.productSubcategory) {
+      if (candSpec.productSubcategory && candSpec.productSubcategory !== intent.spec.productSubcategory) {
+        return {
+          conformant: false,
+          similarityScore: 0,
+          matchedTokens: [],
+          rejectionReason: `Subcategory mismatch: query requires ${intent.spec.productSubcategory}, but candidate is ${candSpec.productSubcategory}`
+        };
+      }
+    }
+
+    // Explicit MPN Guard:
+    if (intent.spec.mpn && candSpec.mpn && intent.spec.mpn !== candSpec.mpn) {
+      return {
+        conformant: false,
+        similarityScore: 0,
+        matchedTokens: [],
+        rejectionReason: `MPN specification mismatch: query requires ${intent.spec.mpn}, but candidate is ${candSpec.mpn}`
       };
     }
   }
