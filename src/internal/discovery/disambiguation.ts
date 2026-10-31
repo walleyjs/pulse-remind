@@ -408,7 +408,7 @@ const DIMENSION_GLOBAL_RE = new RegExp(
 );
 
 const HAS_DIGIT_RE = /[0-9]/;
-const SIMPLE_NUM_UNIT_RE = /^([0-9]+(?:\.[0-9]+)?)([a-z]+)$/i;
+const SIMPLE_NUM_UNIT_RE = /^([0-9]+(?:\.[0-9]+)?)(?:-)?([a-z]+)$/i;
 
 /**
  * Extracts all physical, electrical, storage, and counting dimensions from arbitrary text
@@ -861,10 +861,10 @@ const RELATIONAL_PREPOSITION_RE =
   /\b(compatible\s+with|designed\s+for|suitable\s+for|made\s+for|replacement\s+for|spare\s+part\s+for|accessory\s+for|fits(?:\s+for)?|for)\b/gi;
 
 const SECONDARY_FEATURE_CLAUSE_RE =
-  /\s+(?:with|featuring|includes?|including|plus|direct\s+from|shipped\s+from|imported\s+from)\b|\s*\(|\s+[-–—/|]\s+/i;
+  /\s+(?:with|featuring|includes?|including|plus|direct\s+from|shipped\s+from|imported\s+from)\b|\s*\(|\s+[-–—/|]\s+|\s*\+\s*/i;
 
 const TOKENIZE_UNIT_COLLAPSE_RE =
-  /([0-9]+(?:\.[0-9]+)?)\s*(cu\.?\s*ft\.?|btu(?:\/h|h)?|kva|kw|va|hp|mah|ah|ghz|mhz|hz|rpm|tb|gb|mb|kg|ml|mm|cm|ft|inch(?:es)?|burners?|doors?|ports?|l|w|v)\b/gi;
+  /([0-9]+(?:\.[0-9]+)?)(?:\s*-\s*|\s*)(cu\.?\s*ft\.?|btu(?:\/h|h)?|kva|kw|va|hp|mah|ah|ghz|mhz|hz|rpm|tb|gb|mb|kg|ml|mm|cm|ft|inch(?:es)?|burners?|doors?|ports?|l|w|v)\b/gi;
 
 /**
  * Detects whether text describes a product as brand_new, uk_used (or Tokunbo / fairly used), or refurbished.

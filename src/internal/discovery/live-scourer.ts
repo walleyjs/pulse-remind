@@ -30,7 +30,8 @@ function collectJsonObjects(input: any, acc: Record<string, any>[]): void {
  */
 export async function fetchLiveHtml(
   targetUrl: string,
-  timeoutMs = 2500
+  timeoutMs = 4000,
+  maxRedirects = 3
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
@@ -57,6 +58,20 @@ export async function fetchLiveHtml(
         timeout: timeoutMs
       },
       (res) => {
+        if (
+          (res.statusCode === 301 ||
+            res.statusCode === 302 ||
+            res.statusCode === 307 ||
+            res.statusCode === 308) &&
+          res.headers.location &&
+          maxRedirects > 0
+        ) {
+          const nextUrl = new URL(res.headers.location, targetUrl).toString();
+          res.resume();
+          fetchLiveHtml(nextUrl, timeoutMs, maxRedirects - 1).then(resolve, reject);
+          return;
+        }
+
         const encoding = res.headers['content-encoding'];
         let stream: any = res;
         if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
