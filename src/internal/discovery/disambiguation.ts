@@ -49,6 +49,9 @@ const KNOWN_BRANDS = [
   'maxi',
   'skyrun',
   'century',
+  'ox',
+  'maxi',
+  'airtel',
   'infinix',
   'tecno',
   'itel',
@@ -198,15 +201,27 @@ export function detectProductCondition(text: string): ProductCondition {
   return 'brand_new';
 }
 
-const SYNONYM_MAP: Record<string, string[]> = {
+export const SYNONYM_MAP: Record<string, string[]> = {
   washer: ['washing', 'machine', 'washer'],
   washing: ['washing', 'washer'],
   fridge: ['refrigerator', 'fridge'],
   refrigerator: ['refrigerator', 'fridge'],
   laptop: ['laptop', 'notebook', 'macbook'],
   macbook: ['macbook', 'laptop'],
-  tv: ['television', 'tv', 'oled'],
-  headphones: ['headphones', 'headset', 'earbuds']
+  tv: ['television', 'tv', 'oled', 'tvr'],
+  tvr: ['television', 'tv', 'oled'],
+  fan: ['fan', 'standing', 'satnding'],
+  standing: ['standing', 'satnding', 'fan'],
+  satnding: ['standing', 'fan'],
+  cooker: ['cooker', 'cooke', 'stove'],
+  cooke: ['cooker', 'stove'],
+  gas: ['gas'],
+  router: ['router', 'mifi', 'modem'],
+  airtel: ['airtel'],
+  internet: ['internet', 'broadband', 'wifi'],
+  microwave: ['microwave', 'oven'],
+  headphones: ['headphones', 'headset', 'earbuds'],
+  tokunbo: ['used', 'uk', 'tokunbo']
 };
 
 export function tokenizeNormalized(input: string): string[] {
@@ -225,16 +240,22 @@ function inferDomainClass(tokens: string[]): {
 } {
   const joined = tokens.join(' ');
   if (
-    /\b(washing\s+machine|washer|dryer|refrigerator|fridge|dishwasher|oven|range|air\s+conditioner|freezer)\b/i.test(
+    /\b(washing\s+machine|washer|dryer|refrigerator|fridge|dishwasher|oven|range|air\s+conditioner|freezer|cooker|cooke|stove|microwave)\b/i.test(
       joined
     )
   ) {
     return { domainClass: 'appliance', minPlausiblePriceFloor: 140 };
   }
+  if (/\b(fan|satnding|standing\s+fan)\b/i.test(joined)) {
+    return { domainClass: 'appliance', minPlausiblePriceFloor: 25 };
+  }
+  if (/\b(router|mifi|modem|airtel)\b/i.test(joined)) {
+    return { domainClass: 'electronics', minPlausiblePriceFloor: 20 };
+  }
   if (/\b(macbook|laptop|thinkpad|xps|desktop|gpu|rtx|iphone|ipad|galaxy\s+s2\d)\b/i.test(joined)) {
     return { domainClass: 'computing', minPlausiblePriceFloor: 180 };
   }
-  if (/\b(tv|television|oled|playstation|ps5|ps6|xbox|camera|headphones|vacuum|dyson)\b/i.test(joined)) {
+  if (/\b(tv|television|oled|tvr|smart\s+tv|playstation|ps5|ps6|xbox|camera|headphones|vacuum|dyson)\b/i.test(joined)) {
     return { domainClass: 'electronics', minPlausiblePriceFloor: 60 };
   }
   if (/\b(vpn|hosting|saas|subscription|cloud|plan|insurance|service)\b/i.test(joined)) {
@@ -300,6 +321,10 @@ export function parseDiscoveryQuery(
     destinationZone = 'interstate';
   } else if (/\b(in\s+lagos|to\s+lagos|\blagos\b)\b/i.test(rawQuery)) {
     destinationZone = 'lagos';
+  }
+
+  if (destinationZone && !mergedPredicate.currency) {
+    mergedPredicate.currency = 'NGN';
   }
 
   const rawTokens = tokenizeNormalized(stripped);

@@ -1,5 +1,10 @@
 import { config } from '../../config/index.ts';
-import type { ParsedDiscoveryIntent, ProductCondition, DestinationZone } from './disambiguation.ts';
+import {
+  SYNONYM_MAP,
+  type ParsedDiscoveryIntent,
+  type ProductCondition,
+  type DestinationZone
+} from './disambiguation.ts';
 
 export type MerchantTier =
   | 'official_store'
@@ -226,6 +231,8 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
   ): Promise<DiscoveredCandidateListing[]> {
     if (
       intent.predicate.currency === 'NGN' ||
+      options.destinationZone !== undefined ||
+      intent.destinationZone !== undefined ||
       /\b(jumia|konga|slot|kara|fouani|jiji|lagos|abuja|tokunbo|₦|ngn)\b/i.test(intent.rawQuery)
     ) {
       return [];
@@ -513,7 +520,11 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
     // so users testing ANY product name in local/demo mode get realistic multi-store comparison & cluster watches!
     const hasOverlap = catalog.some((item) => {
       const lower = item.title.toLowerCase();
-      return intent.coreTokens.some((tok) => lower.includes(tok));
+      return intent.coreTokens.some((tok) => {
+        if (lower.includes(tok)) return true;
+        const syns = SYNONYM_MAP[tok];
+        return Boolean(syns && syns.some((s) => lower.includes(s)));
+      });
     });
 
     if (!hasOverlap && intent.coreTokens.length > 0) {
@@ -940,6 +951,375 @@ export class NigerianCommerceAdapter implements DiscoveryProvider {
           abuja: 3000,
           interstate: 4500
         }
+      },
+
+      // --- Standing Fan Ecosystem ---
+      {
+        id: 'jumia_ox_standing_fan',
+        providerName: this.providerName,
+        title: 'Ox 18-inch High-Velocity Industrial Standing Fan with Heavy Duty Motor',
+        price: 34500,
+        shippingCost: 2000,
+        listPrice: 45000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Express',
+          title: 'Ox 18-inch Industrial Standing Fan',
+          price: 34500,
+          listPrice: 45000,
+          rating: 4.7,
+          reviews: 380,
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Express',
+        rating: 4.7,
+        reviewCount: 380,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 2000,
+          abuja: 5000,
+          interstate: 8000
+        }
+      },
+      {
+        id: 'konga_century_fan',
+        providerName: this.providerName,
+        title: 'Century 18-inch Rechargeable Standing Fan with Remote & LED Light',
+        price: 38000,
+        shippingCost: 2500,
+        listPrice: 48000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Retail',
+          title: 'Century 18-inch Rechargeable Standing Fan',
+          price: 36100,
+          listPrice: 48000,
+          rating: 4.8,
+          reviews: 510,
+          promo: 'FANSAVE5',
+          currency: 'NGN'
+        }),
+        seller: 'Konga Retail',
+        rating: 4.8,
+        reviewCount: 510,
+        inStock: true,
+        promoCode: 'FANSAVE5',
+        promoDiscountPercent: 5,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 2500,
+          abuja: 6000,
+          interstate: 9000
+        }
+      },
+      {
+        id: 'fan_blade_trap',
+        providerName: this.providerName,
+        title: 'Universal 18-inch Plastic Blade Replacement for Standing Fan',
+        price: 3500,
+        shippingCost: 1000,
+        listPrice: 5000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'FanSpares Lagos',
+          title: 'Plastic Blade Replacement for Standing Fan',
+          price: 3500,
+          listPrice: 5000,
+          rating: 4.6,
+          reviews: 95,
+          currency: 'NGN'
+        }),
+        seller: 'FanSpares Lagos',
+        rating: 4.6,
+        reviewCount: 95,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'vetted_3p',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 1000,
+          abuja: 2500,
+          interstate: 4000
+        }
+      },
+
+      // --- Internet Airtel Router Ecosystem ---
+      {
+        id: 'konga_airtel_4g_router',
+        providerName: this.providerName,
+        title: 'Airtel 4G LTE Smart Desktop Broadband Router (Includes 50GB Bonus Data)',
+        price: 32000,
+        shippingCost: 1500,
+        listPrice: 38000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Official Store',
+          title: 'Airtel 4G LTE Smart Broadband Router',
+          price: 32000,
+          listPrice: 38000,
+          rating: 4.8,
+          reviews: 290,
+          currency: 'NGN'
+        }),
+        seller: 'Konga Official Store',
+        rating: 4.8,
+        reviewCount: 290,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 1500,
+          abuja: 4000,
+          interstate: 6000
+        }
+      },
+      {
+        id: 'jumia_airtel_5g_router',
+        providerName: this.providerName,
+        title: 'Airtel 5G Ultra-Fast Portable MiFi Router with High Capacity Battery',
+        price: 28000,
+        shippingCost: 1200,
+        listPrice: 35000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Express',
+          title: 'Airtel 5G Ultra-Fast Portable MiFi Router',
+          price: 25200,
+          listPrice: 35000,
+          rating: 4.7,
+          reviews: 340,
+          promo: 'NET10',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Express',
+        rating: 4.7,
+        reviewCount: 340,
+        inStock: true,
+        promoCode: 'NET10',
+        promoDiscountPercent: 10,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 1200,
+          abuja: 3500,
+          interstate: 5500
+        }
+      },
+
+      // --- Microwave Oven Ecosystem ---
+      {
+        id: 'fouani_lg_microwave',
+        providerName: this.providerName,
+        title: 'LG 20L Solo Microwave Oven NeoChef with Smart Inverter & EasyClean',
+        price: 85000,
+        shippingCost: 0,
+        listPrice: 110000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Fouani Nigeria Official',
+          title: 'LG 20L Solo Microwave Oven NeoChef',
+          price: 85000,
+          listPrice: 110000,
+          rating: 4.9,
+          reviews: 280,
+          currency: 'NGN'
+        }),
+        seller: 'Fouani Nigeria Official',
+        rating: 4.9,
+        reviewCount: 280,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        warranty: '2 Years Official Fouani LG Warranty',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 5000,
+          interstate: 10000
+        }
+      },
+      {
+        id: 'jumia_hisense_microwave',
+        providerName: this.providerName,
+        title: 'Hisense 20L Digital Solo Microwave Oven with Defrost Function',
+        price: 72000,
+        shippingCost: 2000,
+        listPrice: 90000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Official Store',
+          title: 'Hisense 20L Digital Solo Microwave Oven',
+          price: 68400,
+          listPrice: 90000,
+          rating: 4.8,
+          reviews: 410,
+          promo: 'KITCHEN5',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Official Store',
+        rating: 4.8,
+        reviewCount: 410,
+        inStock: true,
+        promoCode: 'KITCHEN5',
+        promoDiscountPercent: 5,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 2000,
+          abuja: 6000,
+          interstate: 12000
+        }
+      },
+
+      // --- Gas Cooker Ecosystem ---
+      {
+        id: 'jumia_scanfrost_cooker',
+        providerName: this.providerName,
+        title: 'Scanfrost 4-Burner Gas Cooker with Oven and Grill (Inox Finish)',
+        price: 145000,
+        shippingCost: 0,
+        listPrice: 180000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Official Store',
+          title: 'Scanfrost 4-Burner Gas Cooker with Oven',
+          price: 130500,
+          listPrice: 180000,
+          rating: 4.8,
+          reviews: 195,
+          promo: 'CHEF10',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Official Store',
+        rating: 4.8,
+        reviewCount: 195,
+        inStock: true,
+        promoCode: 'CHEF10',
+        promoDiscountPercent: 10,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 12000,
+          interstate: 24000
+        }
+      },
+      {
+        id: 'konga_maxi_cooker',
+        providerName: this.providerName,
+        title: 'Maxi 4-Burner Stainless Steel Gas Cooker with Gas Oven',
+        price: 138000,
+        shippingCost: 3000,
+        listPrice: 165000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Konga Retail',
+          title: 'Maxi 4-Burner Stainless Steel Gas Cooker',
+          price: 138000,
+          listPrice: 165000,
+          rating: 4.7,
+          reviews: 220,
+          currency: 'NGN'
+        }),
+        seller: 'Konga Retail',
+        rating: 4.7,
+        reviewCount: 220,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'platform_fulfilled',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 3000,
+          abuja: 11000,
+          interstate: 22000
+        }
+      },
+
+      // --- Television (TV) Ecosystem ---
+      {
+        id: 'fouani_hisense_tv',
+        providerName: this.providerName,
+        title: 'Hisense 43-inch Full HD Smart Google TV with Voice Remote & Bluetooth',
+        price: 245000,
+        shippingCost: 0,
+        listPrice: 310000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Fouani Nigeria Official',
+          title: 'Hisense 43-inch Full HD Smart Google TV',
+          price: 245000,
+          listPrice: 310000,
+          rating: 4.9,
+          reviews: 480,
+          currency: 'NGN'
+        }),
+        seller: 'Fouani Nigeria Official',
+        rating: 4.9,
+        reviewCount: 480,
+        inStock: true,
+        promoCode: null,
+        promoDiscountPercent: null,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        warranty: '2 Years Official Fouani Warranty',
+        shippingByZone: {
+          lagos: 0,
+          abuja: 8000,
+          interstate: 18000
+        }
+      },
+      {
+        id: 'jumia_tcl_tv',
+        providerName: this.providerName,
+        title: 'TCL 43-inch 4K UHD Smart Google TV with Dolby Audio & HDR10',
+        price: 255000,
+        shippingCost: 2500,
+        listPrice: 330000,
+        currency: 'NGN',
+        url: buildDemoUrl({
+          store: 'Jumia Official Store',
+          title: 'TCL 43-inch 4K UHD Smart Google TV',
+          price: 229500,
+          listPrice: 330000,
+          rating: 4.8,
+          reviews: 360,
+          promo: 'VISION10',
+          currency: 'NGN'
+        }),
+        seller: 'Jumia Official Store',
+        rating: 4.8,
+        reviewCount: 360,
+        inStock: true,
+        promoCode: 'VISION10',
+        promoDiscountPercent: 10,
+        promoDiscountAmount: null,
+        merchantTier: 'official_store',
+        condition: 'brand_new',
+        shippingByZone: {
+          lagos: 2500,
+          abuja: 9000,
+          interstate: 20000
+        }
       }
     ];
 
@@ -952,7 +1332,11 @@ export class NigerianCommerceAdapter implements DiscoveryProvider {
 
     const hasOverlap = catalog.some((item) => {
       const lower = item.title.toLowerCase();
-      return intent.coreTokens.some((tok) => lower.includes(tok));
+      return intent.coreTokens.some((tok) => {
+        if (lower.includes(tok)) return true;
+        const syns = SYNONYM_MAP[tok];
+        return Boolean(syns && syns.some((s) => lower.includes(s)));
+      });
     });
 
     if (!hasOverlap && intent.coreTokens.length > 0) {

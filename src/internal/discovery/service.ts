@@ -69,8 +69,13 @@ export class DealDiscoveryService {
     );
 
     const intent = parseDiscoveryQuery(req.query, req.predicateOverrides);
-    const effectiveZone: DestinationZone =
-      req.destinationZone || req.searchOptions?.destinationZone || intent.destinationZone || 'lagos';
+    const effectiveZone: DestinationZone | undefined =
+      req.destinationZone || req.searchOptions?.destinationZone || intent.destinationZone;
+
+    if (effectiveZone && !intent.predicate.currency) {
+      intent.destinationZone = effectiveZone;
+      intent.predicate.currency = 'NGN';
+    }
 
     const rawCandidates = await this.providers.searchAll(intent, {
       baseUrl,
