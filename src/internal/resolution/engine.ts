@@ -146,6 +146,19 @@ export class ResolutionEngine {
           updatedWatch,
           finalEvaluation
         );
+
+        // Competitive Cluster Watchdog (1-to-N Race): cool down sibling merchant watches in the same cluster_group_id
+        if (updatedWatch.cluster_group_id) {
+          const cooledSiblings = this.watchRepo.cooldownClusterSiblings(
+            updatedWatch.cluster_group_id,
+            updatedWatch.id,
+            updatedWatch.title,
+            updatedWatch.tenant_id
+          );
+          for (const sib of cooledSiblings) {
+            eventBus.emitEvent('watch:updated', sib.tenant_id, sib);
+          }
+        }
       }
 
       // 4. Closing-Soon Deadline Notification check (Octopus `closing_soon_notified`)
@@ -312,7 +325,7 @@ export class ResolutionEngine {
     const canonicalGroups = new Map<string, typeof dueWatches>();
 
     for (const w of dueWatches) {
-      if (w.status === 'paused' || (!forceAll && !w.is_auto_resolve)) continue;
+      if (w.status === 'paused' || w.status === 'cooled_down' || (!forceAll && !w.is_auto_resolve)) continue;
 
       if (w.status === 'hibernating' && w.window_start_date) {
         const start = new Date(w.window_start_date);
@@ -336,8 +349,12 @@ export class ResolutionEngine {
 
     for (const [, watchesInGroup] of canonicalGroups) {
       if (watchesInGroup.length === 0) continue;
-      // 1. Probe the target ONCE for this canonical target group
+      // 1. Probe the target ONCE for this canonical target group (skip if cooled down mid-cycle by a cluster sibling)
       const primary = watchesInGroup[0];
+      const latestPrimary = this.watchRepo.getById(primary.id, primary.tenant_id);
+      if (!latestPrimary || latestPrimary.status === 'cooled_down' || latestPrimary.status === 'paused') {
+        continue;
+      }
       const outcome = await this.runWatchCheck(primary.id);
       if (!outcome) continue;
 

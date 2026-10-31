@@ -85,6 +85,9 @@ function getTemporalPhaseBadge(watch) {
   if (watch.status === 'triggered_open') {
     return '<span class="status-pill active"><span class="status-pill-dot"></span>Triggered Live</span>';
   }
+  if (watch.status === 'cooled_down') {
+    return '<span class="status-pill hibernating"><span class="status-pill-dot"></span>Race Cooled Down</span>';
+  }
   if (watch.status === 'expired_closed') {
     return '<span class="status-pill hibernating"><span class="status-pill-dot"></span>Closed</span>';
   }
@@ -124,9 +127,12 @@ function getCategoryLabel(cat) {
 function buildCommerceBadgesHtml(w) {
   const pred = w.commerce_predicate;
   const state = w.last_commerce_state;
-  if (!pred && !state) return '';
+  if (!pred && !state && !w.cluster_group_id) return '';
 
   const pills = [];
+  if (w.cluster_group_id) {
+    pills.push(`<span class="category-tag" title="Competitive Multi-Store Cluster Race (${escapeHtml(w.cluster_group_id)})">Cluster Race</span>`);
+  }
   if (pred?.targetPrice != null) {
     pills.push(`<span class="category-tag">Target &le; $${Number(pred.targetPrice).toFixed(2)}</span>`);
   }
@@ -1000,6 +1006,64 @@ function setupModals() {
   document.getElementById('markReadBtn')?.addEventListener('click', async () => {
     await fetch('/api/notifications/read-all', { method: 'POST' });
     await fetchOverview();
+  });
+
+  // Multi-Platform Deal Discovery Modal
+  const dealDialog = document.getElementById('dealSearchDialog');
+  document.getElementById('openDealSearchBtn')?.addEventListener('click', () => dealDialog?.showModal());
+  document.getElementById('closeDealSearchBtn')?.addEventListener('click', () => dealDialog?.close());
+
+  document.getElementById('dealSearchForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const submitBtn = document.getElementById('dealSearchSubmitBtn');
+    const resultsBox = document.getElementById('dealSearchResults');
+    if (submitBtn) submitBtn.textContent = 'Scanning Stores...';
+    try {
+      const res = await fetch('/api/deals/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: form.query.value,
+          target_price: form.target_price.value || undefined,
+          min_rating_confidence: form.min_rating_confidence.value || undefined,
+          auto_watch_if_above_target: true
+        })
+      });
+      const data = await res.json();
+      if (resultsBox) {
+        const modeBanner =
+          data.resolution_mode === 'immediate_winner'
+            ? `<div class="status-pill active" style="margin-bottom:8px;">Immediate Verified Winner Found (${data.rejected_count} accessories/shills filtered)</div>`
+            : data.resolution_mode === 'cluster_watch_armed'
+              ? `<div class="status-pill approaching" style="margin-bottom:8px;">Armed ${data.created_cluster_watches?.length || 0}-Store Competitive Cluster Watch (${escapeHtml(data.cluster_group_id)})</div>`
+              : `<div class="status-pill hibernating">No verified listings matched (${data.rejected_count} filtered)</div>`;
+
+        const cards = (data.leaderboard || [])
+          .slice(0, 4)
+          .map(
+            (d) => `
+            <div class="watch-row ${d.meetsTargetPredicate ? 'is-triggered' : ''}">
+              <div class="watch-meta-strip">
+                <span class="status-pill ${d.meetsTargetPredicate ? 'active' : 'approaching'}">Landed: $${Number(d.landedPrice).toFixed(2)}</span>
+                <span class="category-tag">${escapeHtml(d.listing.seller)}</span>
+                <span class="category-tag">Wilson: ${(d.wilsonConfidence * 100).toFixed(1)}%</span>
+                ${d.listing.promoCode ? `<span class="category-tag">Promo: ${escapeHtml(d.listing.promoCode)} (-$${Number(d.promoSavings).toFixed(2)})</span>` : ''}
+              </div>
+              <div class="watch-title">${escapeHtml(d.listing.title)}</div>
+              <div style="margin-top:6px;">
+                <a class="link-btn primary-link" href="${escapeHtml(d.listing.url)}" target="_blank" rel="noopener">Open Verified Store ↗</a>
+              </div>
+            </div>
+          `
+          )
+          .join('');
+        resultsBox.innerHTML = modeBanner + cards;
+      }
+      await fetchOverview();
+    } finally {
+      if (submitBtn) submitBtn.textContent = 'Search & Compare Stores';
+    }
   });
 }
 

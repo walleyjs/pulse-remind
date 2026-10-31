@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { URL } from 'node:url';
 import { config } from '../../config/index.ts';
 import { demoPortalService } from '../../internal/demo/service.ts';
+import { dealDiscoveryService } from '../../internal/discovery/service.ts';
 import { chatExtractorService } from '../../internal/extractor/service.ts';
 import { resolveTimeframeWindow } from '../../internal/extractor/timeframe.ts';
 import { notificationService } from '../../internal/notification/service.ts';
@@ -1029,6 +1030,61 @@ export function createAppServer(): http.Server {
           extracted_opportunities: extracted,
           created_watches: createdWatches
         });
+        return;
+      }
+
+      // 6b. Multi-Platform Deal Discovery & Competitive Cluster Watch Endpoint
+      if (pathname === '/api/deals/search' && req.method === 'POST') {
+        const { tenantId, userEmail } = extractTenantId(req.headers, parsedUrl.searchParams);
+        const body = await readJsonBody(req);
+        const query = String(body.query || '').trim();
+        if (!query) {
+          sendJson(res, 400, { error: 'Missing required parameter: query' });
+          return;
+        }
+
+        const predicateOverrides: Record<string, unknown> = {};
+        if (body.target_price !== undefined && body.target_price !== '') {
+          predicateOverrides.targetPrice = Number(body.target_price);
+        }
+        if (body.min_rating_confidence !== undefined && body.min_rating_confidence !== '') {
+          const val = Number(body.min_rating_confidence);
+          predicateOverrides.minRatingConfidence = val > 1 ? val / 100 : val;
+        }
+        if (body.required_promo_code && String(body.required_promo_code).trim()) {
+          predicateOverrides.requiredPromoCode = String(body.required_promo_code).trim().toUpperCase();
+        }
+
+        const recipientEmail =
+          body.recipient_email && !isDisallowedAmbientEmail(String(body.recipient_email))
+            ? String(body.recipient_email)
+            : userEmail && !isDisallowedAmbientEmail(userEmail)
+              ? userEmail
+              : undefined;
+
+        const syndicatedFeeds = Array.isArray(body.syndicated_feeds)
+          ? (body.syndicated_feeds as Array<{ sourceName: string; format: 'rss' | 'json'; content: string }>)
+          : undefined;
+        const syndicatedFeedUrls = Array.isArray(body.syndicated_feed_urls)
+          ? body.syndicated_feed_urls.map(String)
+          : undefined;
+
+        const result = await dealDiscoveryService.discoverAndWatch({
+          query,
+          tenantId,
+          baseUrl,
+          predicateOverrides,
+          autoWatchIfAboveTarget: body.auto_watch_if_above_target !== false,
+          alwaysCreateWatch: Boolean(body.always_create_watch),
+          maxClusterWatches: body.max_cluster_watches ? Number(body.max_cluster_watches) : 3,
+          recipientEmail,
+          searchOptions: {
+            syndicatedFeedPayloads: syndicatedFeeds,
+            syndicatedFeedUrls
+          }
+        });
+
+        sendJson(res, 200, result);
         return;
       }
 

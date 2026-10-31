@@ -105,6 +105,7 @@ export interface WatchRecord {
   detected_apply_url: string | null;
   commerce_predicate?: CommercePredicateConfig | null;
   last_commerce_state?: CommerceEvaluationResult | null;
+  cluster_group_id?: string | null;
   triggered_at: string | null;
   created_at: string;
 }
@@ -147,4 +148,5 @@ export interface CreateWatchInput {
   recipient_email?: string | null;
   resolution_config?: Partial<ResolutionConfig>;
   commerce_predicate?: CommercePredicateConfig | null;
+  cluster_group_id?: string | null;
 }

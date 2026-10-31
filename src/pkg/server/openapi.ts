@@ -137,6 +137,46 @@ export function buildOpenApiSpec(baseUrl: string): Record<string, unknown> {
             '200': { description: 'Check outcome and dispatched notifications' }
           }
         }
+      },
+      '/api/deals/search': {
+        post: {
+          operationId: 'findBestDealsAndWatch',
+          summary: 'Search multi-platform deals by product query, rank landed costs with Wilson rating confidence, and provision competitive cluster watches',
+          'x-openai-isConsequential': false,
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['query'],
+                  properties: {
+                    query: {
+                      type: 'string',
+                      description: 'Product query and optional price or rating targets (e.g., "LG washing machine under $600")'
+                    },
+                    target_price: {
+                      type: 'number',
+                      description: 'Optional target maximum landed price'
+                    },
+                    min_rating_confidence: {
+                      type: 'number',
+                      description: 'Optional minimum 95% Wilson rating confidence [0.0 - 1.0]'
+                    },
+                    auto_watch_if_above_target: {
+                      type: 'boolean',
+                      default: true,
+                      description: 'Provision competitive multi-store cluster watch if current prices exceed target'
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': { description: 'Ranked verified deals leaderboard and cluster watch state' }
+          }
+        }
       }
     },
     components: {

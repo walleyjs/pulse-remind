@@ -1,4 +1,5 @@
 import { config } from '../../config/index.ts';
+import { dealDiscoveryService } from '../../internal/discovery/service.ts';
 import { chatExtractorService, inferCategoryFromText } from '../../internal/extractor/service.ts';
 import { notificationService } from '../../internal/notification/service.ts';
 import { resolveTimeframeWindow } from '../../internal/extractor/timeframe.ts';
@@ -264,6 +265,54 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       },
       required: ['watch_id', 'action']
     }
+  },
+  {
+    name: 'find_best_deals_and_watch',
+    description:
+      'Searches across multiple online storefronts and syndicated deal streams by product name without requiring a URL, filters out accessories and low-credibility shill listings using 95% Wilson rating confidence, ranks total landed prices including shipping and promo codes, and provisions a multi-store competitive cluster watch if current prices exceed the target.',
+    annotations: {
+      title: 'Discover Multi-Store Deals and Arm Cluster Watch',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Product search query and optional price or rating constraints (e.g., "LG front load washing machine under $600", "MacBook Pro M4 16-inch")'
+        },
+        target_price: {
+          type: 'number',
+          description: 'Optional maximum total landed price threshold.'
+        },
+        min_rating_confidence: {
+          type: 'number',
+          description: 'Optional minimum 95% Wilson score lower bound [0.0 - 1.0], defaults to 0.70.'
+        },
+        required_promo_code: {
+          type: 'string',
+          description: 'Optional promo or coupon code token to verify.'
+        },
+        auto_watch_if_above_target: {
+          type: 'boolean',
+          description:
+            'Whether to automatically provision a multi-store competitive cluster watch across top contenders when current prices exceed target_price.'
+        },
+        max_cluster_watches: {
+          type: 'number',
+          description: 'Maximum number of competing merchant URLs to include in a cluster watch (1 to 5).'
+        },
+        recipient_email: {
+          type: 'string',
+          description: 'Optional destination email address for alert delivery.'
+        }
+      },
+      required: ['query']
+    }
   }
 ];
 
@@ -465,6 +514,66 @@ export async function executeMcpTool(
       const nextStatus = action === 'pause' ? 'paused' : 'active_monitoring';
       const updated = watchService.updateWatchFields(watchId, { status: nextStatus }, tenantId);
       return { success: true, watch: updated };
+    }
+
+    case 'find_best_deals_and_watch': {
+      const query = String(args.query || '').trim();
+      if (!query) {
+        throw new Error('Missing required argument: query');
+      }
+
+      const providedEmail =
+        args.recipient_email && !isDisallowedAmbientEmail(String(args.recipient_email))
+          ? String(args.recipient_email).trim()
+          : oauthEmail && !isDisallowedAmbientEmail(oauthEmail)
+            ? oauthEmail
+            : undefined;
+
+      if (providedEmail) {
+        notificationService.setSavedDefaultEmail(providedEmail, tenantId);
+      }
+
+      const predicateOverrides: Record<string, unknown> = {};
+      if (args.target_price !== undefined && args.target_price !== null) {
+        predicateOverrides.targetPrice = Number(args.target_price);
+      }
+      if (args.min_rating_confidence !== undefined && args.min_rating_confidence !== null) {
+        const val = Number(args.min_rating_confidence);
+        predicateOverrides.minRatingConfidence = val > 1 ? val / 100 : val;
+      }
+      if (args.required_promo_code) {
+        predicateOverrides.requiredPromoCode = String(args.required_promo_code).trim().toUpperCase();
+      }
+
+      const discovery = await dealDiscoveryService.discoverAndWatch({
+        query,
+        tenantId,
+        baseUrl,
+        predicateOverrides,
+        autoWatchIfAboveTarget: args.auto_watch_if_above_target !== false,
+        maxClusterWatches: args.max_cluster_watches ? Number(args.max_cluster_watches) : 3,
+        recipientEmail: providedEmail
+      });
+
+      const primaryWatch = discovery.created_cluster_watches[0] || null;
+      const savedEmail = providedEmail || notificationService.getSavedDefaultEmail(tenantId) || null;
+      const hasBoundEmail = Boolean(savedEmail && !isDisallowedAmbientEmail(savedEmail));
+
+      return {
+        success: true,
+        resolution_mode: discovery.resolution_mode,
+        winning_deal: discovery.winning_deal,
+        leaderboard: discovery.leaderboard,
+        rejected_count: discovery.rejected_count,
+        rejected_candidates: discovery.rejected_candidates,
+        cluster_group_id: discovery.cluster_group_id,
+        created_cluster_watches: discovery.created_cluster_watches,
+        delivery_status: hasBoundEmail ? 'BOUND_READY' : 'ACTION_REQUIRED_ASK_USER_FOR_EMAIL',
+        destination_status: hasBoundEmail ? 'bound' : 'unbound',
+        bound_email: hasBoundEmail ? savedEmail : null,
+        calendar_links: primaryWatch ? buildWatchCalendarLinks(primaryWatch, baseUrl) : null,
+        elapsed_ms: discovery.elapsed_ms
+      };
     }
 
     default:

@@ -480,10 +480,18 @@ export function extractCommercePredicateFromText(text: string): PricePredicateCo
   }
 
   // 6. Required promo code: "with promo code WELCOME12", "coupon code SAVE20", "with code TECH2026"
-  const promoMatch = text.match(/(?:with\s+)?(?:promo(?:\s+code)?|coupon(?:\s+code)?|voucher|code)\s+['"]?([A-Z0-9_\-]{3,24})['"]?/i);
+  const promoMatch = text.match(
+    /(?:with\s+)?(?:promo\s+code|coupon\s+code|coupon|voucher|with\s+code)\s+['"]?([A-Za-z0-9_\-]{3,24})['"]?/i
+  );
   if (promoMatch) {
-    const token = promoMatch[1].toUpperCase();
-    if (!['OPEN', 'CODE', 'VALID', 'ACTIVE', 'ONLY', 'WHEN', 'THAT'].includes(token)) {
+    const rawToken = promoMatch[1];
+    // Genuine promo code tokens are uppercase/alphanumeric codes (e.g. SAVE20, WELCOME12, VIPFALL), not lowercase prose words
+    const hasDigitOrAllCaps = /[0-9]/.test(rawToken) || rawToken === rawToken.toUpperCase();
+    const token = rawToken.toUpperCase();
+    if (
+      hasDigitOrAllCaps &&
+      !['OPEN', 'CODE', 'CODES', 'VALID', 'ACTIVE', 'ONLY', 'WHEN', 'THAT', 'CHECKOUT'].includes(token)
+    ) {
       config.requiredPromoCode = token;
       matchedAny = true;
     }

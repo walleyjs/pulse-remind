@@ -108,6 +108,7 @@ function mapWatchRow(row: Record<string, unknown>): WatchRecord {
     detected_apply_url: row.detected_apply_url ? String(row.detected_apply_url) : null,
     commerce_predicate: commercePredicate,
     last_commerce_state: lastCommerceState,
+    cluster_group_id: row.cluster_group_id ? String(row.cluster_group_id) : null,
     triggered_at: row.triggered_at ? String(row.triggered_at) : null,
     created_at: String(row.created_at)
   };
@@ -193,12 +194,12 @@ export class WatchRepository {
     const triggerType: TriggerType =
       input.trigger_type || (input.target_url ? (input.window_start_date ? 'hybrid' : 'web_monitor') : 'scheduled_date');
 
-    const inferredPredicate = extractCommercePredicateFromText(
-      `${input.title} ${input.condition_text || ''} ${input.chat_context || ''}`
-    );
-    const effectiveCommercePredicate: CommercePredicateConfig | null = input.commerce_predicate
-      ? { ...(inferredPredicate || {}), ...input.commerce_predicate }
-      : inferredPredicate;
+    const effectiveCommercePredicate: CommercePredicateConfig | null =
+      input.commerce_predicate && Object.keys(input.commerce_predicate).length > 0
+        ? input.commerce_predicate
+        : extractCommercePredicateFromText(
+            `${input.title} ${input.condition_text || ''} ${input.chat_context || ''}`
+          );
 
     const resConfig: ResolutionConfig = {
       primary_source_name: input.resolution_config?.primary_source_name || 'Official Event & Opportunity Portal',
@@ -237,8 +238,8 @@ export class WatchRepository {
           canonical_url_key, rrule, trigger_type, condition_text, expected_keywords, closed_keywords,
           window_start_date, window_label, check_interval_minutes, poll_after,
           is_auto_resolve, resolution_config, status,
-          notify_channels, recipient_email, last_status_summary, commerce_predicate_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+          notify_channels, recipient_email, last_status_summary, commerce_predicate_json, cluster_group_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         effectiveTenantId,
@@ -265,6 +266,7 @@ export class WatchRepository {
         resolvedEmail,
         initialSummary,
         effectiveCommercePredicate ? JSON.stringify(effectiveCommercePredicate) : null,
+        input.cluster_group_id || null,
         now
       );
 
@@ -289,6 +291,63 @@ export class WatchRepository {
       unknown
     >[];
     return rows.map(mapWatchRow);
+  }
+
+  listByClusterGroup(clusterGroupId: string, tenantId?: string): WatchRecord[] {
+    if (tenantId && tenantId !== 'all') {
+      const rows = db
+        .prepare('SELECT * FROM watches WHERE cluster_group_id = ? AND tenant_id = ? ORDER BY created_at ASC')
+        .all(clusterGroupId, tenantId) as Record<string, unknown>[];
+      return rows.map(mapWatchRow);
+    }
+    const rows = db
+      .prepare('SELECT * FROM watches WHERE cluster_group_id = ? ORDER BY created_at ASC')
+      .all(clusterGroupId) as Record<string, unknown>[];
+    return rows.map(mapWatchRow);
+  }
+
+  cooldownClusterSiblings(
+    clusterGroupId: string,
+    winningWatchId: string,
+    winningTitle: string,
+    tenantId?: string
+  ): WatchRecord[] {
+    const siblings = this.listByClusterGroup(clusterGroupId, tenantId).filter(
+      (w) => w.id !== winningWatchId && w.status !== 'cooled_down' && w.status !== 'triggered_open'
+    );
+    if (siblings.length === 0) return [];
+
+    const summary = `Cluster race won by sibling store watch ${winningWatchId} ("${winningTitle}"). Cooled down.`;
+    const cooled: WatchRecord[] = [];
+
+    runInTransaction(() => {
+      for (const sib of siblings) {
+        const nextVersion = sib.version + 1;
+        db.prepare(`
+          UPDATE watches
+          SET status = 'cooled_down',
+              is_auto_resolve = 0,
+              last_status_summary = ?,
+              version = ?
+          WHERE id = ?
+        `).run(summary, nextVersion, sib.id);
+
+        const updated = this.getById(sib.id, sib.tenant_id);
+        if (updated) {
+          cooled.push(updated);
+          enqueueOutbox({
+            tenant_id: sib.tenant_id,
+            event_type: 'watch_updated',
+            entity_table: 'watches',
+            entity_id: sib.id,
+            payload: updated as unknown as Record<string, unknown>,
+            version: nextVersion
+          });
+        }
+      }
+    });
+
+    return cooled;
   }
 
   list(statusFilter?: string, tenantId?: string, userEmail?: string | null): WatchRecord[] {

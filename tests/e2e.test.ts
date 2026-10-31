@@ -209,8 +209,9 @@ test('4. MCP stdio server responds to JSON-RPC 2.0 initialize and tools/list ove
   assert.equal(responses[0].id, 1);
   assert.equal(responses[1].id, 2);
   const tools = (responses[1].result as { tools: Array<{ name: string }> }).tools;
-  assert.equal(tools.length, 6);
+  assert.equal(tools.length, 7);
   assert.ok(tools.some((t) => t.name === 'set_notification_destination'));
+  assert.ok(tools.some((t) => t.name === 'find_best_deals_and_watch'));
 });
 
 test('5. Server composition root initializes HTTP server and starts/stops background scheduler cleanly', async () => {
@@ -2821,6 +2822,189 @@ test('35. Full-Stack Commerce Watch Lifecycle: NL Extraction, SQLite Persistence
     `Summary must include deal verification and Wilson score, got: ${poll2.evaluation.summary}`
   );
 });
+
+test('36. Multi-Platform Deal Discovery & Comparison Engine: Anti-Accessory Disambiguation, Landed Cost Ranking, Wilson Fraud Filter, and 1-to-N Cluster Watch Cooldown', async () => {
+  const { Readable } = await import('node:stream');
+  const { executeMcpTool } = await import('../src/pkg/mcp/tools.ts');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+  const { watchService } = await import('../src/internal/watch/service.ts');
+  const { resolutionEngine } = await import('../src/internal/resolution/engine.ts');
+  const { SyndicatedDealAdapter } = await import('../src/internal/discovery/provider.ts');
+
+  const baseUrl = 'http://localhost:3456';
+  const testTenant = 'tenant_deal_discovery_' + Date.now();
+
+  // 36a. Syndicated RSS Deal Feed Parsing + HTTP POST /api/deals/search Immediate Winner Test
+  const rssSample = `<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel>
+      <item>
+        <title><![CDATA[Whirlpool 4.8 cu. ft. High-Efficiency Top Load Washing Machine - $529.00 (was $849.00)]]></title>
+        <link>${baseUrl}/demo/deal-portal?store=SyndicatedDirect&amp;title=Whirlpool+Washing+Machine&amp;price=529.00&amp;list_price=849.00&amp;rating=4.7&amp;reviews=220</link>
+        <description><![CDATA[4.7 stars (220 reviews). Free delivery included.]]></description>
+      </item>
+    </channel></rss>`;
+
+  const rssAdapter = new SyndicatedDealAdapter();
+  const parsedRss = rssAdapter.parseRssOrAtomXml(rssSample, 'SlickSyndicate');
+  assert.equal(parsedRss.length, 1);
+  assert.equal(parsedRss[0].price, 529);
+  assert.equal(parsedRss[0].listPrice, 849);
+
+  const server = createAppServer();
+  const dispatchHttp = (opts: { method: string; url: string; body?: unknown }) =>
+    new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
+      const req = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : []) as any;
+      req.method = opts.method;
+      req.url = opts.url;
+      req.headers = {
+        host: 'localhost:3456',
+        'content-type': 'application/json',
+        'x-tenant-id': testTenant
+      };
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          resolve({ status: statusCode, json: () => (raw ? JSON.parse(raw) : {}) });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+      server.emit('request', req, res);
+    });
+
+  // Query: "washing machine under $550" (No URL provided!)
+  const searchRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'washing machine under $550',
+      min_rating_confidence: 0.80,
+      syndicated_feeds: [{ sourceName: 'SlickSyndicate', format: 'rss', content: rssSample }]
+    }
+  });
+  assert.equal(searchRes.status, 200);
+  const searchData = searchRes.json();
+
+  // Execution benchmark: < 20ms
+  assert.ok(
+    searchData.elapsed_ms < 20,
+    `Multi-store discovery, disambiguation, Wilson scoring, and Pareto ranking must run in < 20ms (took ${searchData.elapsed_ms}ms)`
+  );
+  assert.equal(searchData.resolution_mode, 'immediate_winner');
+  assert.ok(searchData.winning_deal, 'Must identify immediate verified winning deal');
+
+  // Verify Anti-Accessory & Toy Disambiguation: $18.99 drain hose & $39.50 toy washer MUST be rejected
+  const rejectedStages = searchData.rejected_candidates.map((r: any) => `${r.stage}:${r.listing.id}`);
+  assert.ok(
+    rejectedStages.includes('sku_disambiguation:wm_hose_trap'),
+    'Must reject $18.99 washing machine drain hose accessory'
+  );
+  assert.ok(
+    rejectedStages.includes('sku_disambiguation:wm_toy_trap'),
+    'Must reject $39.50 kids miniature toy washing machine'
+  );
+
+  // Verify Wilson Fraud Filter: $465 1-review ShillBargainMart MUST be rejected
+  assert.ok(
+    rejectedStages.includes('wilson_credibility:wm_shill_trap'),
+    'Must reject 1-review 5.0-star shill listing via Wilson confidence floor'
+  );
+
+  // Verify Total Landed Cost & Promo Verification Winner:
+  // ApplianceDirect ($620 - 20% promo SAVE20 = $496.00 net landed, 4.8★ across 640 reviews) beats
+  // FreightLiquidators ($480 + $165 shipping = $645.00 landed) and VerifiedOutlet ($540.00)!
+  assert.equal(searchData.winning_deal.listing.id, 'wm_lg_promo_winner');
+  assert.equal(searchData.winning_deal.landedPrice, 496.0);
+  assert.equal(searchData.winning_deal.promoSavings, 124.0);
+  assert.equal(searchData.winning_deal.isParetoOptimal, true);
+
+  // Verify FreightLiquidators ($480 sticker + $165 shipping = $645 landed) was NOT counted as under $550
+  const freightEntry = searchData.leaderboard.find((d: any) => d.listing.id === 'wm_shipping_trap');
+  assert.ok(freightEntry);
+  assert.equal(freightEntry.landedPrice, 645.0);
+  assert.equal(freightEntry.meetsTargetPredicate, false);
+
+  // 36b. Competitive Multi-Store Cluster Watch (1-to-N Race Condition & Sibling Cooldown) via MCP Tool
+  // User asks for an aggressive target ("LG front load washing machine under $440") that NO store meets yet ($496 & $579)
+  const mcpClusterRes = (await executeMcpTool(
+    'find_best_deals_and_watch',
+    {
+      query: 'LG front load washing machine under $440',
+      min_rating_confidence: 0.80,
+      max_cluster_watches: 3
+    },
+    baseUrl,
+    null,
+    testTenant
+  )) as Record<string, any>;
+
+  assert.equal(mcpClusterRes.success, true);
+  assert.equal(mcpClusterRes.resolution_mode, 'cluster_watch_armed');
+  assert.ok(mcpClusterRes.cluster_group_id?.startsWith('cluster_'));
+  assert.equal(
+    mcpClusterRes.created_cluster_watches.length,
+    2,
+    'Only the 2 genuine verified LG washing machines survive brand + Wilson + anti-accessory filters'
+  );
+
+  const [watchStore1, watchStore2] = mcpClusterRes.created_cluster_watches;
+  assert.equal(watchStore1.cluster_group_id, mcpClusterRes.cluster_group_id);
+  assert.equal(watchStore2.cluster_group_id, mcpClusterRes.cluster_group_id);
+
+  // Poll before price drop: neither store is <= $440 yet
+  const preDropCheck = await resolutionEngine.runWatchCheck(watchStore2.id, {
+    bypassCache: true,
+    tenantId: testTenant
+  });
+  assert.equal(preDropCheck?.evaluation.isOpen, false);
+
+  // Simulate Store 2 (MegaHomeStore) launching a flash sale dropping price to $429.00 (<= $440)!
+  watchService.updateWatchFields(
+    watchStore2.id,
+    {
+      target_url: `${baseUrl}/demo/deal-portal?store=MegaHomeStore&title=LG+5.0+cu+ft+Smart+Front+Load+Washer&price=429.00&list_price=949.00&rating=4.7&reviews=425`
+    },
+    testTenant
+  );
+
+  const raceWinOutcome = await resolutionEngine.runWatchCheck(watchStore2.id, {
+    bypassCache: true,
+    tenantId: testTenant
+  });
+  assert.ok(raceWinOutcome);
+  assert.equal(raceWinOutcome.evaluation.isOpen, true);
+  assert.equal(raceWinOutcome.newlyTriggered, true);
+  assert.equal(raceWinOutcome.watch.status, 'triggered_open');
+  assert.ok(
+    raceWinOutcome.notificationsDispatched.length > 0,
+    'Winning merchant in cluster race must dispatch outbox notifications'
+  );
+
+  // Verify Sibling Watch in Cluster was Atomically Cooled Down!
+  const siblingAfterRace = watchService.getWatchById(watchStore1.id, testTenant);
+  assert.ok(siblingAfterRace);
+  assert.equal(
+    siblingAfterRace.status,
+    'cooled_down',
+    'Sibling competing store watch must automatically transition to cooled_down when cluster race is won'
+  );
+  assert.equal(siblingAfterRace.is_auto_resolve, false);
+  assert.ok(siblingAfterRace.last_status_summary?.includes('Cluster race won by sibling store watch'));
+});
+
 
 
 

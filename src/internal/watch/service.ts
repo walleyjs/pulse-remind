@@ -140,6 +140,10 @@ export class WatchService {
   findByCanonicalUrlKey(canonicalUrlKey: string): WatchRecord[] {
     return this.repo.findByCanonicalUrlKey(canonicalUrlKey);
   }
+
+  listWatchesByClusterGroup(clusterGroupId: string, tenantId?: string): WatchRecord[] {
+    return this.repo.listByClusterGroup(clusterGroupId, tenantId);
+  }
 }
 
 export const watchService = new WatchService();

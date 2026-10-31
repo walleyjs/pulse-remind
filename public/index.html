@@ -37,6 +37,9 @@
           <span id="sessionStatusIndicator" class="session-dot"></span>
           <span id="sessionLabel">Session Vault</span>
         </button>
+        <button type="button" class="btn btn-secondary btn-compact" id="openDealSearchBtn">
+          Find Best Deals
+        </button>
         <button type="button" class="btn btn-primary btn-compact" id="openCreateModalBtn">
           + New Watch
         </button>
@@ -253,6 +256,36 @@
           </div>
         </form>
       </div>
+    </div>
+  </dialog>
+
+  <!-- Multi-Platform Deal Discovery & Cluster Watch Dialog -->
+  <dialog id="dealSearchDialog" closedby="any" aria-labelledby="dealSearchDialogTitle">
+    <div class="dialog-content">
+      <div class="dialog-header">
+        <h2 id="dealSearchDialogTitle">Multi-Store Deal Discovery</h2>
+        <button type="button" class="dialog-close-btn" id="closeDealSearchBtn" aria-label="Close modal">&times;</button>
+      </div>
+      <form id="dealSearchForm" class="modal-form">
+        <div class="form-group">
+          <label for="dealSearchQuery">Product Name &amp; Target <span class="label-hint">(No URL needed)</span></label>
+          <input type="text" id="dealSearchQuery" name="query" required placeholder="e.g. LG front load washing machine under $550" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dealTargetPrice">Target Landed Price ($) <span class="label-hint">(Optional)</span></label>
+            <input type="number" step="0.01" id="dealTargetPrice" name="target_price" placeholder="550.00" />
+          </div>
+          <div class="form-group">
+            <label for="dealMinRating">Min Wilson Rating %</label>
+            <input type="number" step="1" min="50" max="99" id="dealMinRating" name="min_rating_confidence" value="80" />
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button type="submit" class="btn btn-primary" id="dealSearchSubmitBtn">Search &amp; Compare Stores</button>
+        </div>
+      </form>
+      <div id="dealSearchResults" class="watches-stream" style="margin-top: 14px;"></div>
     </div>
   </dialog>
 
