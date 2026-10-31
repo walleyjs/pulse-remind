@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.6.0-green.svg)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero_NPM-brightgreen.svg)](#zero-dependency-architecture)
-[![Tests](https://img.shields.io/badge/Tests-30%2F30_Passing-success.svg)](tests/e2e.test.ts)
+[![Tests](https://img.shields.io/badge/Tests-37%2F37_Passing-success.svg)](tests/e2e.test.ts)
 [![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-purple.svg)](https://modelcontextprotocol.io/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Stage-blue.svg)](Dockerfile)
 
@@ -79,6 +79,19 @@ PulseRemind bridges conversational AI to the temporal future:
   * `anywhere_on_earth`: Computes AoE (UTC-12) boundaries for international academic and grant deadlines.
 * **RFC 5545 Dual-Alarm Calendar Synchronization**: Generates standard `.ics` feeds with CRLF formatting, 75-octet line folding, monotonic `SEQUENCE` updates, and dual `VALARM` triggers (T-24h and T-1h).
 * **Multi-Tenant Cryptographic Vaults**: Isolated session storage with progressive account linking: users claiming tokens or confirming emails atomically coalesce historical sessions into their private vault.
+* **Multi-Platform Deal Discovery & Comparison Engine**:
+  * **Zero-Link Natural Query**: Search across competing storefronts and syndicated deal streams by product name alone (e.g. *"washing machine"*, *"MacBook Pro M4 16-inch"*).
+  * **SKU Disambiguation & Anti-Accessory Guards**: Evaluates token semantics and category price floors to eliminate accessory/spare-part noise (e.g., rejecting \$18 drain hoses or toy washers).
+  * **Total Landed Cost ($P_{\text{landed}} = P_{\text{item}} + P_{\text{shipping}} - D_{\text{promo}}$)**: Computes true landed prices incorporating real shipping fees and verified non-destructive promo code discounts.
+  * **95% Wilson Score Rating Credibility**: Computes lower bound statistical confidence intervals for merchant ratings, filtering out fake 1-review 5.0★ shill sellers.
+  * **1-to-$N$ Competitive Cluster Watches**: Arms multiple competing stores in parallel when current prices exceed target. The first store to drop price wins the race and atomically cools down sibling watches.
+* **Nigerian E-Commerce Localization & Anti-Fraud Suite**:
+  * **NGN Currency & Slang Lexer**: Native parsing of `₦`, `NGN`, `N`, comma-separated values, and suffix expressions (`450k` $\to ₦450,000$, `1.2m` $\to ₦1,200,000$).
+  * **Condition Classifier & UK-Used / Tokunbo Guard**: Distinguishes `brand_new`, `uk_used`, and `refurbished` items, preventing second-hand goods from masquerading as steep price drops unless explicitly requested.
+  * **Merchant Trust Tiers**: Weights Wilson confidence by distributor legitimacy: Official Store (1.05x), Platform Fulfilled (1.00x), Vetted 3P (0.95x), and Unverified Classifieds (0.25x).
+  * **High-Ticket Fraud Protection**: Rejects unverified classified listings over ₦50,000 to eliminate deposit/wharf scams.
+  * **Regional Destination Freight Modeling**: Accurately computes delivery fees across `lagos`, `abuja`, and `interstate` zones.
+  * **Multi-Store Support**: Integrated catalogs for Jumia Nigeria, Konga, Fouani Nigeria Official (LG & Hisense), Slot.ng, and Kara.
 
 ---
 
@@ -163,6 +176,7 @@ All tool schemas are strictly declarative and sanitized against prompt-injection
 | `list_active_watches` | Lists monitored events scoped to the current tenant session. | `status_filter` (`all`, `active`, `hibernating`, `triggered_open`) |
 | `check_watch_now` | Triggers an immediate scrape and evaluation of a target portal. | `watch_id` |
 | `update_or_cancel_watch` | Modifies or deletes an active watch. | `watch_id`, `action` (`pause`, `resume`, `delete`) |
+| `find_best_deals_and_watch` | Searches across competing merchants by product name, disambiguates SKUs, computes landed prices with regional freight and verified promos, and provisions competitive cluster watches. | `query`, `target_price`, `destination_zone`, `min_rating_confidence`, `required_promo_code`, `max_cluster_watches`, `recipient_email` |
 
 ---
 
@@ -185,10 +199,10 @@ PulseRemind runs out of the box with zero external configuration. To enable clou
 
 ## Verification & Test Matrix
 
-PulseRemind includes a comprehensive 30-suite integration test verifying everything from multi-tenant boundaries to virtual-time leaps:
+PulseRemind includes a comprehensive 37-suite integration test verifying everything from multi-tenant boundaries to virtual-time leaps and localized multi-store deal discovery:
 
 ```bash
-# Run all 30 tests in offline memory mode
+# Run all 37 tests in offline memory mode
 npm test
 ```
 
@@ -197,11 +211,12 @@ npm test
 ✔ 2. MCP tools create watch, detect closed state, and fire alerts
 ✔ 3. Octopus ResolutionEngine optimizations: Deduplication & Transient Backoff
 ...
-✔ 28. Strict Parameter Provenance & Hook Context Disambiguation
-✔ 29. Cross-Session Progressive Identity Reconciliation (Account Coalescence)
-✔ 30. Unified /api/overview Multi-Tenant Viewport & Cross-Session Vault Restoration
+✔ 34. Temporal Commerce Predicate Engine: Price Drops, Wilson Score Rating Quality, and Promo Verification
+✔ 35. Full-Stack Commerce Watch Lifecycle: NL Extraction, SQLite Persistence, Multi-Poll Hysteresis, and Outbox Dispatch
+✔ 36. Multi-Platform Deal Discovery & Comparison Engine: Anti-Accessory Disambiguation, Landed Cost Ranking, Wilson Fraud Filter, and 1-to-N Cluster Watch Cooldown
+✔ 37. Nigerian E-Commerce Localization: NGN & Slang Tokenizer, UK-Used Guard, Merchant Trust Tiers, Regional Freight, and Multi-Store Cluster Race
 
-ℹ tests 30 | suites 0 | pass 30 | fail 0
+ℹ tests 37 | suites 0 | pass 37 | fail 0
 ```
 
 ---
@@ -211,7 +226,7 @@ npm test
 We welcome community contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Before opening a pull request, verify that:
-1. All 30 integration tests pass via `npm test`.
+1. All 37 integration tests pass via `npm test`.
 2. No third-party npm runtime dependencies are added.
 3. Code strictly adheres to native TypeScript and Node.js standard library APIs.
 
