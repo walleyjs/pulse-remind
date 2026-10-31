@@ -209,7 +209,6 @@ npm test
 ```
 ✔ 1. Extracts future-dated scholarship plans from AI transcripts
 ✔ 2. MCP tools create watch, detect closed state, and fire alerts
-✔ 3. Octopus ResolutionEngine optimizations: Deduplication & Transient Backoff
 ...
 ✔ 34. Temporal Commerce Predicate Engine: Price Drops, Wilson Score Rating Quality, and Promo Verification
 ✔ 35. Full-Stack Commerce Watch Lifecycle: NL Extraction, SQLite Persistence, Multi-Poll Hysteresis, and Outbox Dispatch
