@@ -159,7 +159,7 @@ export class SyndicatedDealAdapter implements DiscoveryProvider {
         if (isNaN(price)) return;
 
         listings.push({
-          id: `json_${idx}`,
+          id: item.id ? String(item.id) : `json_${sourceName.replace(/\W+/g, '_').toLowerCase()}_${idx}`,
           providerName: this.providerName,
           title,
           price,
@@ -173,7 +173,10 @@ export class SyndicatedDealAdapter implements DiscoveryProvider {
           inStock: item.inStock !== false && !String(item.offers?.availability || '').includes('OutOfStock'),
           promoCode: item.promoCode ? String(item.promoCode).toUpperCase() : null,
           promoDiscountPercent: item.promoDiscountPercent != null ? Number(item.promoDiscountPercent) : null,
-          promoDiscountAmount: item.promoDiscountAmount != null ? Number(item.promoDiscountAmount) : null
+          promoDiscountAmount: item.promoDiscountAmount != null ? Number(item.promoDiscountAmount) : null,
+          merchantTier: item.merchantTier,
+          condition: item.condition,
+          shippingByZone: item.shippingByZone
         });
       });
     } catch {
@@ -538,7 +541,11 @@ export class SimulatedMultiStoreAdapter implements DiscoveryProvider {
       });
     });
 
-    if (!hasOverlap && intent.coreTokens.length > 0) {
+    const hasSyndicatedFeeds = Boolean(
+      options.syndicatedFeedPayloads && options.syndicatedFeedPayloads.length > 0
+    );
+
+    if (!hasOverlap && !hasSyndicatedFeeds && intent.coreTokens.length > 0) {
       const displayTitle = intent.canonicalProductPhrase
         .split(' ')
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
@@ -1522,7 +1529,11 @@ export class NigerianCommerceAdapter implements DiscoveryProvider {
       });
     });
 
-    if (!hasOverlap && intent.coreTokens.length > 0) {
+    const hasSyndicatedFeeds = Boolean(
+      options.syndicatedFeedPayloads && options.syndicatedFeedPayloads.length > 0
+    );
+
+    if (!hasOverlap && !hasSyndicatedFeeds && intent.coreTokens.length > 0) {
       const displayTitle = intent.canonicalProductPhrase
         .split(' ')
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1))

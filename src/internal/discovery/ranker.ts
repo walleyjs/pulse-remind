@@ -102,7 +102,7 @@ export function rankDiscoveredCandidates(
       effectiveShippingCost = listing.shippingByZone[targetZone] ?? listing.shippingCost;
     } else if (
       listing.currency === 'NGN' &&
-      (intent.domainClass === 'appliance' || intent.spec?.productSubcategory === 'washing_machine')
+      intent.domainClass === 'appliance'
     ) {
       // Freight modeling for heavy appliances (60–70kg) across destination zones in Nigeria
       if (targetZone === 'lagos') effectiveShippingCost = listing.shippingCost || 3500;

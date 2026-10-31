@@ -3493,6 +3493,418 @@ test('38. Live Multi-Store Deal Scourer & Canonical Spec Matcher: Hard Dimension
   );
 });
 
+test('39. Open-Vocabulary AVP Lattice & Universal Relational Inversion Matcher: Zero-Code Cross-Category Generalization (ACs, Generators, Power Tools) & Sub-Millisecond Benchmark', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const {
+    parseDiscoveryQuery,
+    extractDimensions,
+    extractAttributeLattice,
+    evaluateCandidateConformance
+  } = await import('../src/internal/discovery/disambiguation.ts');
+  const { createAppServer } = await import('../src/pkg/server/http-server.ts');
+
+  // 39a. Source-Code Zero-Hardcoding Proof:
+  // Verify zero lines of domain-specific code or brand names exist for air conditioners or generators
+  // and zero hardcoded FormFactor / detectProductSubcategory switches remain.
+  const disambiguationPath = path.resolve(process.cwd(), 'src/internal/discovery/disambiguation.ts');
+  const rankerPath = path.resolve(process.cwd(), 'src/internal/discovery/ranker.ts');
+  const disambiguationSrc = fs.readFileSync(disambiguationPath, 'utf-8');
+  const rankerSrc = fs.readFileSync(rankerPath, 'utf-8');
+
+  assert.equal(
+    /air[\s_-]*conditioner|generator|gree|lutian/i.test(disambiguationSrc),
+    false,
+    'disambiguation.ts must contain ZERO domain-specific strings for air conditioners, generators, Gree, or Lutian'
+  );
+  assert.equal(
+    /air[\s_-]*conditioner|generator|gree|lutian/i.test(rankerSrc),
+    false,
+    'ranker.ts must contain ZERO domain-specific strings for air conditioners, generators, Gree, or Lutian'
+  );
+  assert.equal(
+    /export\s+type\s+FormFactor\b|function\s+detectFormFactor\b|function\s+detectProductSubcategory\b/.test(
+      disambiguationSrc
+    ),
+    false,
+    'disambiguation.ts must not rely on hardcoded FormFactor union enums or category switch functions'
+  );
+
+  // Verify Universal Dimension Lexer across diverse SI, industrial, thermal, storage, and counting units
+  const multiDims = extractDimensions('1.5HP 12,000 BTU 5kVA 55" 4-Burner 512GB 20V 4G LTE');
+  assert.deepEqual(
+    multiDims.map((d) => `${d.value}:${d.unit}:${d.axis}`),
+    [
+      '1.5:hp:power',
+      '12000:btu:thermal',
+      '5:kva:power',
+      '55:inch:length',
+      '4:burner:count',
+      '512:gb:storage',
+      '20:v:electrical'
+    ],
+    'Universal Dimension Lexer must extract SI/industrial dimensions while excluding 4G wireless generation tags'
+  );
+
+  // 39b. Unmodeled Category 1: Air Conditioners ("Gree Split Inverter AC 1.5HP")
+  const acQuery = 'Gree Split Inverter AC 1.5HP';
+  const acIntent = parseDiscoveryQuery(acQuery);
+
+  assert.equal(acIntent.brand, 'Gree', 'Open-vocabulary proper-noun brand detection must extract Gree');
+  assert.equal(acIntent.domainClass, 'appliance', 'Physics-based 1.5HP dimension must infer heavy appliance class');
+  assert.equal(acIntent.spec.headNounKernel, 'ac');
+  assert.equal(acIntent.spec.axisQualifiers.mounting_geometry, 'split');
+  assert.equal(acIntent.spec.axisQualifiers.drive_modulation, 'inverter');
+  assert.equal(acIntent.spec.dimensions[0]?.value, 1.5);
+  assert.equal(acIntent.spec.dimensions[0]?.unit, 'hp');
+
+  // Strip fallback negativeAccessoryTokens to [] to prove accessory rejection is 100% driven by syntactic Relational Inversion!
+  const acIntentPureSyntax = { ...acIntent, negativeAccessoryTokens: [] };
+
+  // Valid Match 1: Initialism unification ("AC" <-> "Air Conditioner") + extra feature clauses (Candidate >= Query)
+  const acValid1 = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 1.5HP Split Inverter Air Conditioner with R32 Gas & Fast Cooling',
+    425000
+  );
+  assert.equal(acValid1.conformant, true, `Expected valid Split Inverter AC to pass, got: ${acValid1.rejectionReason}`);
+
+  // Valid Match 2: Within 1% floating-point tolerance (1.51HP vs 1.5HP -> 0.67% <= 1%)
+  const acValidTolerance = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 1.51HP Inverter Split AC Copper',
+    430000
+  );
+  assert.equal(acValidTolerance.conformant, true, '1.51HP must conform to 1.5HP within 1% floating-point tolerance');
+
+  // Trap 1: Orthogonal Qualifier Conflict (1.5HP Floor Standing AC vs Split AC)
+  const acFloorTrap = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 1.5HP Floor Standing Inverter Air Conditioner',
+    680000
+  );
+  assert.equal(acFloorTrap.conformant, false);
+  assert.ok(
+    acFloorTrap.rejectionReason?.includes('Qualifier conflict') &&
+      acFloorTrap.rejectionReason?.includes('split') &&
+      acFloorTrap.rejectionReason?.includes('floor_standing'),
+    `Must reject Floor Standing AC via orthogonal qualifier conflict, got: ${acFloorTrap.rejectionReason}`
+  );
+
+  // Trap 2: Drive Modulation Conflict (Non-Inverter vs Inverter)
+  const acNonInverterTrap = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 1.5HP Split Non-Inverter Air Conditioner',
+    355000
+  );
+  assert.equal(acNonInverterTrap.conformant, false);
+  assert.ok(acNonInverterTrap.rejectionReason?.includes('Qualifier conflict'));
+
+  // Trap 3: Hard Dimension Invariance (2.0HP Split AC vs 1.5HP -> 33.3% > 1% tolerance)
+  const ac2HpTrap = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 2.0HP Split Inverter Air Conditioner',
+    540000
+  );
+  assert.equal(ac2HpTrap.conformant, false);
+  assert.ok(
+    ac2HpTrap.rejectionReason?.includes('1.5hp') && ac2HpTrap.rejectionReason?.includes('2hp'),
+    `Must reject 2.0HP AC for 1.5HP query, got: ${ac2HpTrap.rejectionReason}`
+  );
+
+  // Trap 4: Prepositional Relational Inversion ("Outdoor Wall Mounting Bracket for Gree 1.5HP Split Air Conditioner")
+  // Tested with negativeAccessoryTokens = [] and high price (250,000) so ONLY Relational Inversion can reject it!
+  const acBracketPrepTrap = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Outdoor Wall Mounting Bracket for Gree 1.5HP Split Inverter Air Conditioner',
+    250000
+  );
+  assert.equal(acBracketPrepTrap.conformant, false);
+  assert.ok(
+    acBracketPrepTrap.rejectionReason?.includes('Accessory relational inversion') &&
+      acBracketPrepTrap.rejectionReason?.includes('for'),
+    `Must reject wall mounting bracket purely via prepositional relational inversion, got: ${acBracketPrepTrap.rejectionReason}`
+  );
+
+  // Trap 5: Noun-Adjunct Relational Inversion without preposition ("Gree 1.5HP Split AC Outdoor Wall Bracket")
+  const acBracketAdjunctTrap = evaluateCandidateConformance(
+    acIntentPureSyntax,
+    'Gree 1.5HP Split Inverter AC Outdoor Wall Bracket',
+    250000
+  );
+  assert.equal(acBracketAdjunctTrap.conformant, false);
+  assert.ok(
+    acBracketAdjunctTrap.rejectionReason?.includes('Accessory noun-adjunct inversion') &&
+      acBracketAdjunctTrap.rejectionReason?.includes('bracket'),
+    `Must reject noun-adjunct bracket purely via Right-Hand Head Rule, got: ${acBracketAdjunctTrap.rejectionReason}`
+  );
+
+  // 39c. Unmodeled Category 2: Generators ("Lutian Soundproof Diesel Generator 5kVA")
+  const genQuery = 'Lutian Soundproof Diesel Generator 5kVA';
+  const genIntent = parseDiscoveryQuery(genQuery);
+
+  assert.equal(genIntent.brand, 'Lutian', 'Open-vocabulary proper-noun brand detection must extract Lutian');
+  assert.equal(genIntent.domainClass, 'appliance', 'Physics-based 5kVA dimension must infer heavy appliance class');
+  assert.equal(genIntent.spec.headNounKernel, 'generator');
+  assert.equal(genIntent.spec.axisQualifiers.enclosure_acoustics, 'soundproof');
+  assert.equal(genIntent.spec.axisQualifiers.fuel_energy, 'diesel');
+  assert.equal(genIntent.spec.dimensions[0]?.value, 5);
+  assert.equal(genIntent.spec.dimensions[0]?.unit, 'kva');
+
+  const genIntentPureSyntax = { ...genIntent, negativeAccessoryTokens: [] };
+
+  // Valid Match 1: Full Soundproof Diesel 5kVA unit
+  const genValid1 = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5kVA Soundproof Diesel Generator Key Start 100% Copper',
+    1450000
+  );
+  assert.equal(genValid1.conformant, true, `Expected valid 5kVA Soundproof Diesel Generator to pass, got: ${genValid1.rejectionReason}`);
+
+  // Valid Match 2: Silent Canopy acoustic pole + 5.04kVA (0.8% <= 1% tolerance)
+  const genValid2 = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5.04kVA Silent Canopy Diesel Generator with Automatic Transfer Switch',
+    1490000
+  );
+  assert.equal(genValid2.conformant, true, `Expected Silent Canopy 5.04kVA unit to pass, got: ${genValid2.rejectionReason}`);
+
+  // Trap 1: Open-Frame vs Soundproof Conflict
+  const genOpenFrameTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5kVA Open Frame Diesel Generator Key Start',
+    980000
+  );
+  assert.equal(genOpenFrameTrap.conformant, false);
+  assert.ok(
+    genOpenFrameTrap.rejectionReason?.includes('Qualifier conflict') &&
+      genOpenFrameTrap.rejectionReason?.includes('soundproof') &&
+      genOpenFrameTrap.rejectionReason?.includes('open_frame'),
+    `Must reject Open Frame generator via enclosure qualifier conflict, got: ${genOpenFrameTrap.rejectionReason}`
+  );
+
+  // Trap 2: Petrol vs Diesel Fuel Conflict
+  const genPetrolTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5kVA Soundproof Petrol Generator',
+    890000
+  );
+  assert.equal(genPetrolTrap.conformant, false);
+  assert.ok(
+    genPetrolTrap.rejectionReason?.includes('Qualifier conflict') &&
+      genPetrolTrap.rejectionReason?.includes('diesel') &&
+      genPetrolTrap.rejectionReason?.includes('petrol'),
+    `Must reject Petrol generator via fuel qualifier conflict, got: ${genPetrolTrap.rejectionReason}`
+  );
+
+  // Trap 3: Lattice Subsumption Failure (omits Soundproof qualifier)
+  const genUnsubsumedTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5kVA Electric Start Diesel Generator',
+    995000
+  );
+  assert.equal(genUnsubsumedTrap.conformant, false);
+  assert.ok(
+    genUnsubsumedTrap.rejectionReason?.includes('subsumption') &&
+      genUnsubsumedTrap.rejectionReason?.includes('soundproof'),
+    `Must reject generator omitting required soundproof qualifier, got: ${genUnsubsumedTrap.rejectionReason}`
+  );
+
+  // Trap 4: Hard Dimension Invariance (3.5kVA vs 5kVA)
+  const gen35kVaTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 3.5kVA Soundproof Diesel Generator',
+    1120000
+  );
+  assert.equal(gen35kVaTrap.conformant, false);
+  assert.ok(
+    gen35kVaTrap.rejectionReason?.includes('5kva') && gen35kVaTrap.rejectionReason?.includes('3.5kva')
+  );
+
+  // Trap 5: Prepositional Relational Inversion ("Weatherproof Cover for Lutian 5kVA Soundproof Diesel Generator")
+  const genCoverPrepTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Heavy Duty Weatherproof Cover for Lutian 5kVA Soundproof Diesel Generator',
+    350000
+  );
+  assert.equal(genCoverPrepTrap.conformant, false);
+  assert.ok(
+    genCoverPrepTrap.rejectionReason?.includes('Accessory relational inversion'),
+    `Must reject generator cover via prepositional relational inversion, got: ${genCoverPrepTrap.rejectionReason}`
+  );
+
+  // Trap 6: Noun-Adjunct Relational Inversion ("Lutian 5kVA Soundproof Diesel Generator Maintenance Kit")
+  const genKitAdjunctTrap = evaluateCandidateConformance(
+    genIntentPureSyntax,
+    'Lutian 5kVA Soundproof Diesel Generator Maintenance Kit',
+    350000
+  );
+  assert.equal(genKitAdjunctTrap.conformant, false);
+  assert.ok(
+    genKitAdjunctTrap.rejectionReason?.includes('Accessory noun-adjunct inversion') &&
+      genKitAdjunctTrap.rejectionReason?.includes('kit'),
+    `Must reject generator kit via Right-Hand Head noun-adjunct inversion, got: ${genKitAdjunctTrap.rejectionReason}`
+  );
+
+  // 39d. Unmodeled Category 3: Power Tools Morphological Antonyms ("DeWalt Brushless Cordless Drill 20V")
+  const drillIntent = parseDiscoveryQuery('DeWalt Brushless Cordless Drill 20V');
+  assert.equal(drillIntent.brand, 'DeWalt');
+  assert.equal(
+    evaluateCandidateConformance(drillIntent, 'DeWalt 20V Max Brushless Cordless Drill Driver', 195).conformant,
+    true
+  );
+  assert.equal(
+    evaluateCandidateConformance(drillIntent, 'DeWalt 20V Brushed Cordless Drill', 135).conformant,
+    false,
+    'Must reject Brushed drill for Brushless query'
+  );
+  assert.equal(
+    evaluateCandidateConformance(drillIntent, 'DeWalt 12V Brushless Cordless Drill', 145).conformant,
+    false,
+    'Must reject 12V drill for 20V query'
+  );
+
+  // 39e. End-to-End Multi-Store HTTP Deal Discovery Arbitrage on Unseen Categories & Sub-Millisecond Benchmark
+  const server = createAppServer();
+  const testTenant = 'tenant_avp_lattice_' + Date.now();
+  const dispatchHttp = (opts: { method: string; url: string; body?: unknown }) =>
+    new Promise<{ status: number; json: () => any }>((resolve) => {
+      const chunks: Buffer[] = [];
+      const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
+      const req = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : []) as any;
+      req.method = opts.method;
+      req.url = opts.url;
+      req.headers = {
+        host: 'localhost:3456',
+        'content-type': 'application/json',
+        'x-tenant-id': testTenant
+      };
+      let statusCode = 200;
+      const res = {
+        writeHead(code: number) {
+          statusCode = code;
+          return this;
+        },
+        write(chunk: any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end(chunk?: any) {
+          if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          resolve({ status: statusCode, json: () => (raw ? JSON.parse(raw) : {}) });
+        },
+        on: () => res,
+        once: () => res,
+        emit: () => true
+      } as any;
+      server.emit('request', req, res);
+    });
+
+  const acSyndicatedCatalog = JSON.stringify([
+    {
+      id: 'ac_bracket_trap',
+      title: 'Outdoor Wall Mounting Bracket for Gree 1.5HP Split Air Conditioner',
+      price: 14500,
+      currency: 'NGN',
+      seller: 'Alaba Accessories Hub',
+      rating: 4.8,
+      reviewCount: 210,
+      url: 'http://localhost:3456/demo/deal-portal?store=AlabaAccessories&price=14500'
+    },
+    {
+      id: 'ac_floor_trap',
+      title: 'Gree 1.5HP Floor Standing Inverter Air Conditioner',
+      price: 410000,
+      currency: 'NGN',
+      seller: 'Konga Retail',
+      rating: 4.8,
+      reviewCount: 180,
+      url: 'http://localhost:3456/demo/deal-portal?store=Konga&price=410000'
+    },
+    {
+      id: 'ac_2hp_trap',
+      title: 'Gree 2.0HP Split Inverter Air Conditioner',
+      price: 399000,
+      currency: 'NGN',
+      seller: 'Slot Systems',
+      rating: 4.7,
+      reviewCount: 150,
+      url: 'http://localhost:3456/demo/deal-portal?store=Slot&price=399000'
+    },
+    {
+      id: 'ac_jumia_official',
+      title: 'Gree 1.5HP Split Inverter Air Conditioner with R32 Gas',
+      price: 435000,
+      shippingCost: 4500,
+      currency: 'NGN',
+      seller: 'Jumia Official Store (Gree)',
+      merchantTier: 'official_store',
+      rating: 4.9,
+      reviewCount: 320,
+      url: 'http://localhost:3456/demo/deal-portal?store=JumiaGree&price=435000'
+    },
+    {
+      id: 'ac_kara_winner',
+      title: 'Gree 1.5HP Inverter Split AC with Fast Cooling',
+      price: 418000,
+      shippingCost: 0,
+      currency: 'NGN',
+      seller: 'Kara Official HVAC Store',
+      merchantTier: 'official_store',
+      rating: 4.9,
+      reviewCount: 290,
+      url: 'http://localhost:3456/demo/deal-portal?store=KaraGree&price=418000'
+    }
+  ]);
+
+  const acHttpRes = await dispatchHttp({
+    method: 'POST',
+    url: '/api/deals/search',
+    body: {
+      query: 'Gree Split Inverter AC 1.5HP in Lagos',
+      min_rating_confidence: 0.80,
+      syndicated_feeds: [{ sourceName: 'NigerianHvacFeed', format: 'json', content: acSyndicatedCatalog }]
+    }
+  });
+  assert.equal(acHttpRes.status, 200);
+  const acData = acHttpRes.json();
+  assert.equal(acData.resolution_mode, 'immediate_winner');
+  assert.equal(acData.winning_deal.listing.id, 'ac_kara_winner');
+  assert.equal(acData.leaderboard.length, 2, 'Only the 2 conformant 1.5HP Split Inverter ACs must enter leaderboard');
+
+  const acRejectedIds = new Set(acData.rejected_candidates.map((r: any) => r.listing.id));
+  assert.ok(acRejectedIds.has('ac_bracket_trap'), 'Wall mounting bracket must be rejected');
+  assert.ok(acRejectedIds.has('ac_floor_trap'), '1.5HP Floor Standing AC must be rejected');
+  assert.ok(acRejectedIds.has('ac_2hp_trap'), '2.0HP Split AC must be rejected');
+
+  // Sub-millisecond conformance throughput benchmark (200 evaluations)
+  const benchSamples = [
+    'Gree 1.5HP Split Inverter Air Conditioner with R32 Gas',
+    'Gree 1.5HP Floor Standing Inverter Air Conditioner',
+    'Gree 2.0HP Split Inverter Air Conditioner',
+    'Outdoor Wall Mounting Bracket for Gree 1.5HP Split Air Conditioner',
+    'Lutian 5kVA Soundproof Diesel Generator Key Start',
+    'Lutian 5kVA Open Frame Diesel Generator',
+    'Heavy Duty Weatherproof Cover for Lutian 5kVA Soundproof Diesel Generator'
+  ];
+  const tStart = performance.now();
+  const iterations = 200;
+  for (let i = 0; i < iterations; i++) {
+    const sample = benchSamples[i % benchSamples.length];
+    const activeIntent = i % 7 < 4 ? acIntent : genIntent;
+    evaluateCandidateConformance(activeIntent, sample, 450000);
+    extractAttributeLattice(sample, false);
+  }
+  const avgMsPerEval = (performance.now() - tStart) / iterations;
+  assert.ok(
+    avgMsPerEval < 0.25,
+    `AVP Lattice extraction + conformance evaluation must execute in sub-millisecond time (< 0.25ms/eval, took ${avgMsPerEval.toFixed(4)}ms)`
+  );
+});
+
+
 
 
 
