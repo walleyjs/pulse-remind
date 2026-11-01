@@ -293,13 +293,31 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
         : `Monitoring Commerce Threshold (Entity "${entityCheck.matchedToken}" verified)`;
       const summary = `${summaryPrefix}: ${commerceEval.reasons.join(' | ')}`;
 
+      const cur = watch.commerce_predicate.currency || extractedCommerce.currency || 'NGN';
+      const curSymbol = cur === 'NGN' ? '₦' : cur === 'USD' ? '$' : cur;
+      let cleanSnippet = '';
+      if (extractedCommerce.currentPrice) {
+        cleanSnippet = `Current Price: ${curSymbol}${extractedCommerce.currentPrice.toLocaleString('en-NG')}`;
+        if (extractedCommerce.listPrice) cleanSnippet += ` (List: ${curSymbol}${extractedCommerce.listPrice.toLocaleString('en-NG')})`;
+        if (extractedCommerce.rawRatingValue) cleanSnippet += ` • Rating: ${extractedCommerce.rawRatingValue}★ (${extractedCommerce.ratingCount || 0} reviews)`;
+        if (extractedCommerce.sellerName) cleanSnippet += ` • Store: ${extractedCommerce.sellerName}`;
+        if (extractedCommerce.detectedPromoDiscount) cleanSnippet += ` • Promo: ${extractedCommerce.detectedPromoDiscount}`;
+      } else {
+        cleanSnippet = cleanText
+          .replace(/\{[\s\S]*?"@context"[\s\S]*?\}/gi, ' ')
+          .replace(/[{}\[\]"]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 240);
+      }
+
       return {
         httpStatus,
         isOpen,
         outcome,
         confidence,
         summary,
-        extractedSnippet: cleanText.slice(0, 260),
+        extractedSnippet: cleanSnippet,
         snapshotHash,
         pageChanged,
         detectedDeadline,

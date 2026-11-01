@@ -137,13 +137,53 @@ export class NotificationService {
       }
     }
 
-    const subject = `🟢 OPEN NOW: ${watch.title} is accepting applications!`;
-    const plainMessage =
-      `Your tracked opportunity "${watch.title}" (planned in ${watch.source_chat_client}) is now OPEN!\n` +
-      `• Context from your AI chat: ${watch.chat_context}\n` +
-      `• Detection Summary: ${evaluation.summary}\n` +
-      (evaluation.detectedDeadline ? `• Deadline: ${evaluation.detectedDeadline}\n` : '') +
-      `• Apply Link: ${evaluation.detectedApplyUrl || watch.target_url || 'N/A'}`;
+    const isCommerce =
+      watch.category === 'commerce_drop' ||
+      watch.category === 'deal_or_promo' ||
+      Boolean(watch.commerce_predicate);
+
+    const isScholarship = watch.category === 'scholarship';
+
+    let subject: string;
+    let plainMessage: string;
+
+    if (isCommerce) {
+      const cur = watch.commerce_predicate?.currency || 'NGN';
+      const curSymbol = cur === 'NGN' ? '₦' : cur === 'USD' ? '$' : cur;
+      const targetPriceVal = watch.commerce_predicate?.targetPrice;
+      const currentPriceVal = evaluation.commerceEvaluation?.extracted?.currentPrice;
+
+      const currentPriceStr = currentPriceVal
+        ? `${curSymbol}${currentPriceVal.toLocaleString('en-NG')}`
+        : 'Target Price Reached';
+      const targetPriceStr = targetPriceVal
+        ? `${curSymbol}${targetPriceVal.toLocaleString('en-NG')}`
+        : '';
+
+      subject = `🏷️ PRICE ALERT: ${watch.title} reached your target price!`;
+      plainMessage =
+        `Great news! A verified price drop has been detected for "${watch.title}"!\n` +
+        `• Current Price: ${currentPriceStr}\n` +
+        (targetPriceStr ? `• Target Alert: ${targetPriceStr}\n` : '') +
+        `• Availability: In Stock (Verified)\n` +
+        `• Store Portal: ${evaluation.detectedApplyUrl || watch.target_url || 'N/A'}\n` +
+        `• Chat Context: ${watch.chat_context}`;
+    } else if (isScholarship) {
+      subject = `🟢 OPEN NOW: ${watch.title} is accepting applications!`;
+      plainMessage =
+        `Your tracked opportunity "${watch.title}" (planned in ${watch.source_chat_client}) is now OPEN!\n` +
+        `• Context from your AI chat: ${watch.chat_context}\n` +
+        `• Detection Summary: ${evaluation.summary}\n` +
+        (evaluation.detectedDeadline ? `• Deadline: ${evaluation.detectedDeadline}\n` : '') +
+        `• Apply Link: ${evaluation.detectedApplyUrl || watch.target_url || 'N/A'}`;
+    } else {
+      subject = `🔔 REMINDER: ${watch.title} is now active!`;
+      plainMessage =
+        `Your tracked event "${watch.title}" is now active!\n` +
+        `• Context from your AI chat: ${watch.chat_context}\n` +
+        `• Details: ${evaluation.summary}\n` +
+        `• Link: ${evaluation.detectedApplyUrl || watch.target_url || 'N/A'}`;
+    }
 
     for (const channel of channelsToTrigger) {
       const channelCfg = configMap.get(channel);

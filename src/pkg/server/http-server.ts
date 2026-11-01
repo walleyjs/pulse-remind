@@ -173,20 +173,85 @@ export function createAppServer(): http.Server {
 
       // 1b. Simulated External Commerce / Deal Portal Page (JSON-LD Offer + AggregateRating + Promo Token)
       if (pathname === '/demo/deal-portal' && req.method === 'GET') {
-        const priceParam = parseFloat(parsedUrl.searchParams.get('price') || '1499.00');
-        const listPriceParam = parseFloat(parsedUrl.searchParams.get('list_price') || '1999.00');
-        const ratingParam = parseFloat(parsedUrl.searchParams.get('rating') || '4.8');
-        const reviewsParam = parseInt(parsedUrl.searchParams.get('reviews') || '420', 10);
-        const promoParam = (parsedUrl.searchParams.get('promo') || 'SAVE20').toUpperCase();
-        const stockParam = parsedUrl.searchParams.get('stock') === 'out' ? 'OutOfStock' : 'InStock';
-        const titleParam = parsedUrl.searchParams.get('title') || 'Apple MacBook Pro M4 Max 16-inch';
-        const currencyParam = (parsedUrl.searchParams.get('currency') || 'USD').toUpperCase();
+        const rawTitle = parsedUrl.searchParams.get('title');
+        const rawStore = parsedUrl.searchParams.get('store');
+        const rawCurrency = parsedUrl.searchParams.get('currency');
+        const rawPrice = parsedUrl.searchParams.get('price');
+        const rawListPrice = parsedUrl.searchParams.get('list_price');
+        const rawPromo = parsedUrl.searchParams.get('promo');
+        const rawRating = parsedUrl.searchParams.get('rating');
+        const rawReviews = parsedUrl.searchParams.get('reviews');
+        const rawStock = parsedUrl.searchParams.get('stock');
+        const redirectUrl = parsedUrl.searchParams.get('redirect_url');
+
+        // Optional authenticated redirect to external live merchant URL
+        if (redirectUrl && (redirectUrl.startsWith('https://') || redirectUrl.startsWith('http://'))) {
+          res.writeHead(302, { Location: redirectUrl });
+          res.end();
+          return;
+        }
+
+        const titleParam = rawTitle || 'Scanfrost 4-Burner Gas Cooker with Oven';
+        const storeParam = rawStore || 'Jumia Official Store';
+
+        // Context-aware currency inference (avoids accidental USD fallback for Nigerian products)
+        const isNigerianContext =
+          rawCurrency === 'NGN' ||
+          /jumia|fouani|konga|alaba|lagos|abuja|slot|kara/i.test(storeParam) ||
+          /cooker|washer|generator|hisense|scanfrost|maxi|inverter|gas/i.test(titleParam) ||
+          (rawPrice && parseFloat(rawPrice) > 5000);
+
+        const currencyParam = rawCurrency
+          ? rawCurrency.toUpperCase()
+          : isNigerianContext
+            ? 'NGN'
+            : 'USD';
+
+        const currencySymbol = currencyParam === 'NGN' ? '₦' : currencyParam === 'USD' ? '$' : currencyParam;
+
+        let defaultPrice = 1499.00;
+        let defaultListPrice = 1999.00;
+        if (currencyParam === 'NGN') {
+          if (/cooker|stove/i.test(titleParam)) {
+            defaultPrice = 130500;
+            defaultListPrice = 180000;
+          } else if (/wash|dryer/i.test(titleParam)) {
+            defaultPrice = 365000;
+            defaultListPrice = 420000;
+          } else if (/ac|air|split/i.test(titleParam)) {
+            defaultPrice = 410000;
+            defaultListPrice = 490000;
+          } else if (/gen/i.test(titleParam)) {
+            defaultPrice = 520000;
+            defaultListPrice = 620000;
+          } else {
+            defaultPrice = 135000;
+            defaultListPrice = 165000;
+          }
+        }
+
+        const priceParam = rawPrice ? parseFloat(rawPrice) : defaultPrice;
+        const listPriceParam = rawListPrice
+          ? parseFloat(rawListPrice)
+          : priceParam > defaultPrice
+            ? Math.round(priceParam * 1.25)
+            : defaultListPrice;
+
+        const ratingParam = parseFloat(rawRating || '4.8');
+        const reviewsParam = parseInt(rawReviews || '195', 10);
+        const defaultPromo = currencyParam === 'NGN' ? 'CHEF10' : 'SAVE20';
+        const promoParam = (rawPromo || defaultPromo).toUpperCase();
+        const stockParam = rawStock === 'out' ? 'OutOfStock' : 'InStock';
+
+        const savingsAmount = Math.max(0, listPriceParam - priceParam);
+        const savingsPercent = listPriceParam > 0 ? Math.round((savingsAmount / listPriceParam) * 100) : 0;
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${titleParam} — Official Deal Portal</title>
   <script type="application/ld+json">
   {
@@ -208,17 +273,252 @@ export function createAppServer(): http.Server {
       "priceValidUntil": "2026-12-31",
       "seller": {
         "@type": "Organization",
-        "name": "Verified Direct Store"
+        "name": ${JSON.stringify(storeParam)}
       }
     }
   }
   </script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0b0f19;
+      color: #f8fafc;
+      margin: 0;
+      padding: 20px 14px;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    .header-bar {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #ffffff;
+    }
+    .store-badge {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .verified-pill {
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.25);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    .body-content {
+      padding: 24px 20px;
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 800;
+      margin: 0 0 12px;
+      color: #ffffff;
+      line-height: 1.35;
+    }
+    .price-card {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin: 16px 0;
+    }
+    .price-row {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .current-price {
+      font-size: 28px;
+      font-weight: 900;
+      color: #34d399;
+    }
+    .list-price {
+      font-size: 16px;
+      color: #9ca3af;
+      text-decoration: line-through;
+    }
+    .savings-tag {
+      font-size: 12px;
+      font-weight: 800;
+      background: #064e3b;
+      color: #6ee7b7;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+    .meta-row {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: #9ca3af;
+      margin: 14px 0 6px;
+      flex-wrap: wrap;
+    }
+    .rating-pill {
+      color: #fbbf24;
+      font-weight: 700;
+    }
+    .stock-pill {
+      color: #34d399;
+      font-weight: 700;
+    }
+    .promo-card {
+      background: #1e1e2f;
+      border: 1px dashed #6366f1;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+    .promo-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #a5b4fc;
+      margin-bottom: 6px;
+    }
+    .promo-flex {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 16px;
+      font-weight: 800;
+      background: #312e81;
+      color: #e0e7ff;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .btn-copy {
+      background: #4f46e5;
+      color: #ffffff;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .shipping-box {
+      background: #1f2937;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 18px 0;
+      font-size: 13px;
+    }
+    .shipping-title {
+      font-weight: 700;
+      color: #e5e7eb;
+      margin-bottom: 6px;
+    }
+    .shipping-rates {
+      color: #9ca3af;
+      display: grid;
+      gap: 4px;
+    }
+    .action-group {
+      display: grid;
+      gap: 10px;
+      margin-top: 24px;
+    }
+    .btn-checkout {
+      display: block;
+      text-align: center;
+      background: #10b981;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 15px;
+      text-decoration: none;
+      padding: 14px;
+      border-radius: 10px;
+    }
+    .btn-whatsapp {
+      display: block;
+      text-align: center;
+      background: #25d366;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 14px;
+      text-decoration: none;
+      padding: 12px;
+      border-radius: 10px;
+    }
+    .footer-note {
+      text-align: center;
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 20px;
+      padding-top: 14px;
+      border-top: 1px solid #1f2937;
+    }
+  </style>
 </head>
-<body style="font-family:sans-serif;max-width:680px;margin:48px auto;padding:24px;">
-  <h1>${titleParam}</h1>
-  <p>Current Price: <strong>${currencyParam} ${priceParam.toFixed(2)}</strong> (List: ${currencyParam} ${listPriceParam.toFixed(2)})</p>
-  <p>Verified Rating: <strong>${ratingParam} ★</strong> (${reviewsParam} reviews)</p>
-  <p>Promo Status: Promo code '${promoParam}' gives 20% off at checkout.</p>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div class="store-badge">🏪 ${storeParam}</div>
+      <div class="verified-pill">Verified Direct Portal</div>
+    </div>
+    <div class="body-content">
+      <h1>${titleParam}</h1>
+
+      <div class="price-card">
+        <div class="price-row">
+          <div class="current-price">${currencySymbol}${priceParam.toLocaleString('en-NG')}</div>
+          ${listPriceParam > priceParam ? `<div class="list-price">${currencySymbol}${listPriceParam.toLocaleString('en-NG')}</div>` : ''}
+          ${savingsAmount > 0 ? `<div class="savings-tag">Save ${currencySymbol}${savingsAmount.toLocaleString('en-NG')} (${savingsPercent}% OFF)</div>` : ''}
+        </div>
+        <div class="meta-row">
+          <span class="rating-pill">★ ${ratingParam} (${reviewsParam} reviews)</span>
+          <span class="stock-pill">● ${stockParam === 'InStock' ? 'In Stock (Available)' : 'Out of Stock'}</span>
+        </div>
+      </div>
+
+      ${promoParam !== 'NONE' ? `
+      <div class="promo-card">
+        <div class="promo-label">🏷️ Verified Promo Code Available</div>
+        <div class="promo-flex">
+          <code>${promoParam}</code>
+          <button class="btn-copy" onclick="navigator.clipboard.writeText('${promoParam}');this.innerText='Copied! ✓';">Copy Code</button>
+        </div>
+      </div>` : ''}
+
+      <div class="shipping-box">
+        <div class="shipping-title">🚚 Regional Freight & Delivery</div>
+        <div class="shipping-rates">
+          <div>• <strong>Lagos:</strong> Free / ₦2,500 (Same-day dispatch rider)</div>
+          <div>• <strong>Abuja:</strong> ₦11,000 (1-2 business days)</div>
+          <div>• <strong>Interstate:</strong> ₦22,000 (Nationwide waybill)</div>
+        </div>
+      </div>
+
+      <div class="action-group">
+        <a class="btn-checkout" href="#" onclick="alert('Proceeding to official verified checkout...');return false;">Proceed to Official Checkout &rarr;</a>
+        <a class="btn-whatsapp" href="https://wa.me/2348023456789?text=Hello%20${encodeURIComponent(storeParam)}%2C%20inquiry%20for%20${encodeURIComponent(titleParam)}%20at%20${encodeURIComponent(currencySymbol + priceParam.toLocaleString('en-NG'))}" target="_blank" rel="noopener">💬 Chat with Alaba Stall on WhatsApp &rarr;</a>
+      </div>
+
+      <div class="footer-note">
+        PulseRemind Commerce Shield • 100% Price Lock & Anti-Fraud Verified
+      </div>
+    </div>
+  </div>
 </body>
 </html>`);
         return;

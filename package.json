@@ -25,7 +25,7 @@
     "start": "node --no-warnings src/index.ts",
     "dev": "node --watch --no-warnings src/index.ts",
     "mcp": "node --no-warnings src/pkg/mcp/stdio-server.ts",
-    "test": "node --test --no-warnings tests/e2e.test.ts"
+    "test": "node --test --no-warnings tests/*.test.ts"
   },
   "engines": {
     "node": ">=22.6.0"
