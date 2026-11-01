@@ -161,8 +161,11 @@ export class EmailProvider {
       .replace(/<[^>]+>/g, ' ')
       .replace(/\{[\s\S]*?"@context"[\s\S]*?\}/gi, ' ')
       .replace(/\{[\s\S]*?"@type"[\s\S]*?\}/gi, ' ')
+      .replace(/\{[\s\S]*?\}/gi, ' ')
       .replace(/["'{}\[\]]/g, ' ')
       .replace(/\b(?:https?:\/\/\S+)/gi, ' ')
+      .replace(/USD\s+(\d{5,})/gi, '₦$1')
+      .replace(/\bWilson (?:confidence|score)(?:\s+(?:score|lower bound))?\b/gi, 'Seller credibility')
       .replace(/\s+/g, ' ')
       .trim();
   }

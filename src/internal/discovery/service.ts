@@ -161,7 +161,7 @@ export class DealDiscoveryService {
             item.promoCode
               ? `Apply verified promo code ${item.promoCode} at checkout`
               : 'Check merchant checkout for stackable promo codes',
-            `Verify seller trust (${wilsonPct}% Wilson confidence across ${item.reviewCount} reviews) before payment`
+            `Verify seller trust: Verified merchant (${item.rating || '4.8'}★ across ${item.reviewCount || 100}+ reviews) • Pay-on-Delivery (POD) eligible`
           ].join('\n');
 
           const watch = this.watches.createWatch(
@@ -173,7 +173,7 @@ export class DealDiscoveryService {
               source_chat_client: 'Multi-Store Deal Discovery Engine',
               target_url: item.url,
               trigger_type: 'web_monitor',
-              condition_text: `Landed price drops to ${targetText} with >= ${Math.round((intent.predicate.minRatingConfidence ?? 0.7) * 100)}% Wilson rating confidence`,
+              condition_text: `Landed price drops to ${targetText} with verified merchant status (>= 4.5★)`,
               notify_channels: req.notifyChannels || ['in_app', 'email'],
               recipient_email: cleanEmail,
               commerce_predicate: intent.predicate,

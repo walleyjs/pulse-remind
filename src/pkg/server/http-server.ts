@@ -182,10 +182,20 @@ export function createAppServer(): http.Server {
         return;
       }
 
-      // 1b. Simulated External Commerce / Deal Portal Page (JSON-LD Offer + AggregateRating + Promo Token)
+      // 1b. In-Chat Interactive Generative Deal Widget
+      if (pathname === '/demo/generative-deal-widget' && req.method === 'GET') {
+        const widgetPath = path.join(process.cwd(), 'demo', 'generative-deal-widget.html');
+        if (fs.existsSync(widgetPath)) {
+          const content = fs.readFileSync(widgetPath, 'utf-8');
+          sendHtml(res, 200, content);
+          return;
+        }
+      }
+
+      // 1c. Simulated External Commerce / Deal Portal Page (JSON-LD Offer + AggregateRating + Promo Token + Sticky Thumb Actions)
       if (pathname === '/demo/deal-portal' && req.method === 'GET') {
         const rawTitle = parsedUrl.searchParams.get('title');
-        const rawStore = parsedUrl.searchParams.get('store');
+        const rawStore = parsedUrl.searchParams.get('store') || parsedUrl.searchParams.get('seller');
         const rawCurrency = parsedUrl.searchParams.get('currency');
         const rawPrice = parsedUrl.searchParams.get('price');
         const rawListPrice = parsedUrl.searchParams.get('list_price');
@@ -194,6 +204,7 @@ export function createAppServer(): http.Server {
         const rawReviews = parsedUrl.searchParams.get('reviews');
         const rawStock = parsedUrl.searchParams.get('stock');
         const redirectUrl = parsedUrl.searchParams.get('redirect_url');
+        const watchIdParam = parsedUrl.searchParams.get('watch_id') || 'deal-portal-session';
 
         // Optional authenticated redirect to external live merchant URL
         if (redirectUrl && (redirectUrl.startsWith('https://') || redirectUrl.startsWith('http://'))) {
@@ -257,6 +268,16 @@ export function createAppServer(): http.Server {
         const savingsAmount = Math.max(0, listPriceParam - priceParam);
         const savingsPercent = listPriceParam > 0 ? Math.round((savingsAmount / listPriceParam) * 100) : 0;
 
+        // Stall & Negotiation calculations
+        const stallPrice = Math.round(priceParam * 0.92);
+        const offerPrice = Math.round((stallPrice * 0.95) / 1000) * 1000;
+        const stallPriceFormatted = `${currencySymbol}${stallPrice.toLocaleString('en-NG')}`;
+        const offerFormatted = `${currencySymbol}${offerPrice.toLocaleString('en-NG')}`;
+        const officialPriceFormatted = `${currencySymbol}${priceParam.toLocaleString('en-NG')}`;
+        const stallAddress = "Shop B12, Electrical Section, Alaba Int'l Market, Ojo, Lagos";
+        const baseWaText = `Hello Alaba Market Stall, inquiry for ${titleParam} (${stallPriceFormatted}).`;
+        const initialWaUrl = `https://wa.me/2348023456789?text=${encodeURIComponent(baseWaText + ' Is Pay on Delivery (POD) confirmed in Lagos? [Ref: OJA_INIT]')}`;
+
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!DOCTYPE html>
 <html lang="en">
@@ -296,8 +317,9 @@ export function createAppServer(): http.Server {
       background: #0b0f19;
       color: #f8fafc;
       margin: 0;
-      padding: 20px 14px;
+      padding: 16px 12px 100px;
       line-height: 1.5;
+      overflow-x: hidden;
     }
     .container {
       max-width: 640px;
@@ -427,6 +449,24 @@ export function createAppServer(): http.Server {
       font-size: 12px;
       cursor: pointer;
     }
+    /* Tangible Nigerian Trust Badges */
+    .trust-grid {
+      display: grid;
+      gap: 8px;
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+    .trust-badge {
+      font-size: 13px;
+      color: #e5e7eb;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      line-height: 1.4;
+    }
     .shipping-box {
       background: #1f2937;
       border-radius: 10px;
@@ -444,6 +484,63 @@ export function createAppServer(): http.Server {
       display: grid;
       gap: 4px;
     }
+    /* 1-Tap Quick Negotiation Pills */
+    .negotiation-card {
+      background: #1e1e2f;
+      border: 1px dashed #6366f1;
+      border-radius: 12px;
+      padding: 16px;
+      margin: 18px 0;
+    }
+    .negotiation-title {
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      color: #a5b4fc;
+      letter-spacing: 0.04em;
+      margin-bottom: 10px;
+    }
+    .chips-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .chip-pill {
+      background: #312e81;
+      border: 1px solid #4f46e5;
+      color: #e0e7ff;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      min-height: 36px;
+      transition: all 0.15s ease;
+    }
+    .chip-pill:hover, .chip-pill.active {
+      background: #4f46e5;
+      color: #ffffff;
+      border-color: #818cf8;
+    }
+    .quote-preview-box {
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+    }
+    .quote-preview-label {
+      font-size: 11px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .quote-preview-msg {
+      color: #34d399;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height: 1.4;
+      word-break: break-word;
+    }
     .action-group {
       display: grid;
       gap: 10px;
@@ -459,6 +556,8 @@ export function createAppServer(): http.Server {
       text-decoration: none;
       padding: 14px;
       border-radius: 10px;
+      min-height: 48px;
+      line-height: 20px;
     }
     .btn-whatsapp {
       display: block;
@@ -468,8 +567,10 @@ export function createAppServer(): http.Server {
       font-weight: 800;
       font-size: 14px;
       text-decoration: none;
-      padding: 12px;
+      padding: 14px;
       border-radius: 10px;
+      min-height: 48px;
+      line-height: 20px;
     }
     .footer-note {
       text-align: center;
@@ -478,6 +579,165 @@ export function createAppServer(): http.Server {
       margin-top: 20px;
       padding-top: 14px;
       border-top: 1px solid #1f2937;
+    }
+    /* Fitts's Law Optimized Sticky Bottom Action Bar */
+    .sticky-action-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(15, 23, 42, 0.96);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-top: 1px solid #1f2937;
+      padding: 10px 14px env(safe-area-inset-bottom, 12px);
+      display: flex;
+      gap: 10px;
+      z-index: 99;
+      box-shadow: 0 -10px 25px rgba(0, 0, 0, 0.5);
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .btn-primary-official {
+      flex: 1;
+      min-height: 48px;
+      height: 48px;
+      background: #10b981;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 14px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      text-align: center;
+      box-sizing: border-box;
+      padding: 0 10px;
+    }
+    .btn-primary-whatsapp {
+      flex: 1;
+      min-height: 48px;
+      height: 48px;
+      background: #25d366;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 14px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      text-align: center;
+      box-sizing: border-box;
+      padding: 0 10px;
+    }
+    /* Floating Collapsible AI Assistant Drawer */
+    .chat-drawer-btn {
+      position: fixed;
+      bottom: 74px;
+      right: 16px;
+      background: #4f46e5;
+      color: #ffffff;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 13px;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(79, 70, 229, 0.4);
+      z-index: 98;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .assistant-drawer {
+      display: none;
+      position: fixed;
+      bottom: 70px;
+      right: 16px;
+      width: 340px;
+      max-width: calc(100vw - 32px);
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 14px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      overflow: hidden;
+      flex-direction: column;
+    }
+    .assistant-drawer.open {
+      display: flex;
+    }
+    .drawer-header {
+      background: #1f2937;
+      padding: 12px 16px;
+      border-bottom: 1px solid #374151;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .drawer-close {
+      background: none;
+      border: none;
+      color: #9ca3af;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+    }
+    .drawer-body {
+      padding: 14px;
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .drawer-bot-msg {
+      background: #1e293b;
+      border-left: 3px solid #10b981;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.4;
+      color: #e2e8f0;
+    }
+    .drawer-user-msg {
+      background: #4f46e5;
+      color: #ffffff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      align-self: flex-end;
+      font-size: 13px;
+      max-width: 85%;
+    }
+    .drawer-form {
+      padding: 10px 12px;
+      background: #0f172a;
+      border-top: 1px solid #1f2937;
+      display: flex;
+      gap: 8px;
+    }
+    .drawer-input {
+      flex: 1;
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    .drawer-send-btn {
+      background: #10b981;
+      color: #064e3b;
+      font-weight: 800;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
     }
   </style>
 </head>
@@ -502,6 +762,14 @@ export function createAppServer(): http.Server {
         </div>
       </div>
 
+      <!-- Tangible Nigerian Trust Badges -->
+      <div class="trust-grid">
+        <div class="trust-badge">📍 <strong>Physical Stall:</strong> ${stallAddress}</div>
+        <div class="trust-badge">🛡️ <strong>Pay on Delivery (POD) Verified</strong> • Inspect before payment</div>
+        <div class="trust-badge">🏷️ <strong>Warranty:</strong> 1-Year Stall Warranty • 2-Year Official Brand Warranty</div>
+        <div class="trust-badge">📹 <strong>Video Proof:</strong> Live unit test on WhatsApp before dispatch rider</div>
+      </div>
+
       ${promoParam !== 'NONE' ? `
       <div class="promo-card">
         <div class="promo-label">🏷️ Verified Promo Code Available</div>
@@ -510,6 +778,20 @@ export function createAppServer(): http.Server {
           <button class="btn-copy" onclick="navigator.clipboard.writeText('${promoParam}');this.innerText='Copied! ✓';">Copy Code</button>
         </div>
       </div>` : ''}
+
+      <!-- Interactive 1-Tap Quick-Negotiation Pills -->
+      <div class="negotiation-card">
+        <div class="negotiation-title">⚡ 1-Tap Quick Negotiation Pills</div>
+        <div class="chips-container">
+          <button class="chip-pill" onclick="applyNegotiation('offer', '${offerFormatted}')">Offer ${offerFormatted}</button>
+          <button class="chip-pill" onclick="applyNegotiation('waybill', 'Ask for Lagos Waybill')">Ask for Lagos Waybill</button>
+          <button class="chip-pill" onclick="applyNegotiation('video', 'Request Video Proof')">Request Video Proof</button>
+        </div>
+        <div class="quote-preview-box">
+          <div class="quote-preview-label">Live WhatsApp Negotiation Draft (with HMAC Token):</div>
+          <div class="quote-preview-msg" id="quoteMsg">${baseWaText} Is Pay on Delivery (POD) confirmed in Lagos? [Ref: OJA_INIT]</div>
+        </div>
+      </div>
 
       <div class="shipping-box">
         <div class="shipping-title">🚚 Regional Freight & Delivery</div>
@@ -522,7 +804,7 @@ export function createAppServer(): http.Server {
 
       <div class="action-group">
         <a class="btn-checkout" href="#" onclick="alert('Proceeding to official verified checkout...');return false;">Proceed to Official Checkout &rarr;</a>
-        <a class="btn-whatsapp" href="https://wa.me/2348023456789?text=Hello%20${encodeURIComponent(storeParam)}%2C%20inquiry%20for%20${encodeURIComponent(titleParam)}%20at%20${encodeURIComponent(currencySymbol + priceParam.toLocaleString('en-NG'))}" target="_blank" rel="noopener">💬 Chat with Alaba Stall on WhatsApp &rarr;</a>
+        <a class="btn-whatsapp" id="inlineWaBtn" href="${initialWaUrl}" target="_blank" rel="noopener">💬 Chat with Alaba Stall on WhatsApp &rarr;</a>
       </div>
 
       <div class="footer-note">
@@ -530,6 +812,110 @@ export function createAppServer(): http.Server {
       </div>
     </div>
   </div>
+
+  <!-- Fitts's Law Optimized Sticky Bottom Action Bar -->
+  <div class="sticky-action-bar">
+    <a class="btn-primary-official" href="#" onclick="alert('Proceeding to official verified checkout...');return false;">
+      Buy Official ${officialPriceFormatted}
+    </a>
+    <a class="btn-primary-whatsapp" id="stickyWaBtn" href="${initialWaUrl}" target="_blank" rel="noopener">
+      💬 Chat Stall ${stallPriceFormatted}
+    </a>
+  </div>
+
+  <!-- Floating Collapsible AI Assistant Drawer -->
+  <button class="chat-drawer-btn" id="drawerToggleBtn" onclick="toggleAssistantDrawer()" aria-label="Toggle Shopping Assistant">
+    💬 <span>Ask AI Copilot</span>
+  </button>
+
+  <div class="assistant-drawer" id="assistantDrawer">
+    <div class="drawer-header">
+      <div style="font-size: 14px; font-weight: 800; color: #fff;">🤖 PulseRemind Deal Copilot</div>
+      <button class="drawer-close" onclick="toggleAssistantDrawer()">&times;</button>
+    </div>
+    <div class="drawer-body" id="drawerBody">
+      <div class="drawer-bot-msg">
+        👋 Hello! Viewing <strong>${titleParam}</strong>.
+        <br/><br/>
+        Ask questions, check Lagos delivery terms, or request a lower alert threshold!
+      </div>
+    </div>
+    <form class="drawer-form" onsubmit="sendDrawerMessage(event)">
+      <input type="text" id="drawerChatInput" class="drawer-input" placeholder="Type message (e.g. 'Can I get ₦330k?')..." required />
+      <button type="submit" class="drawer-send-btn">Send</button>
+    </form>
+  </div>
+
+  <script>
+    const baseWaText = ${JSON.stringify(baseWaText)};
+    function applyNegotiation(type, val) {
+      let extra = '';
+      if (type === 'offer') {
+        extra = ' Can I pay ' + val + ' for immediate same-day dispatch?';
+      } else if (type === 'waybill') {
+        extra = ' Is free Lagos waybill / bike delivery included?';
+      } else if (type === 'video') {
+        extra = ' Please send a live video recording of the unit unboxed and testing before bike dispatch.';
+      }
+      const token = 'HMAC_' + Math.floor(100000 + Math.random() * 900000);
+      const fullText = baseWaText + extra + ' [Ref: ' + token + ']';
+      const waUrl = 'https://wa.me/2348023456789?text=' + encodeURIComponent(fullText);
+      
+      const stickyBtn = document.getElementById('stickyWaBtn');
+      if (stickyBtn) stickyBtn.href = waUrl;
+      const inlineBtn = document.getElementById('inlineWaBtn');
+      if (inlineBtn) inlineBtn.href = waUrl;
+      
+      const msgEl = document.getElementById('quoteMsg');
+      if (msgEl) msgEl.textContent = fullText;
+    }
+
+    function toggleAssistantDrawer() {
+      const drawer = document.getElementById('assistantDrawer');
+      if (drawer) {
+        drawer.classList.toggle('open');
+      }
+    }
+
+    async function sendDrawerMessage(e) {
+      e.preventDefault();
+      const input = document.getElementById('drawerChatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      
+      const body = document.getElementById('drawerBody');
+      const uMsg = document.createElement('div');
+      uMsg.className = 'drawer-user-msg';
+      uMsg.textContent = text;
+      body.appendChild(uMsg);
+      input.value = '';
+      body.scrollTop = body.scrollHeight;
+
+      try {
+        const res = await fetch('/api/webhooks/inbound-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            watch_id: '${watchIdParam}',
+            text: text,
+            from: 'deal-portal-user'
+          })
+        });
+        const data = await res.json();
+        const bMsg = document.createElement('div');
+        bMsg.className = 'drawer-bot-msg';
+        bMsg.innerHTML = data.confirmation_message || 'Thank you! Your preferences have been noted.';
+        body.appendChild(bMsg);
+        body.scrollTop = body.scrollHeight;
+      } catch (err) {
+        const bMsg = document.createElement('div');
+        bMsg.className = 'drawer-bot-msg';
+        bMsg.textContent = 'Received! Your request has been recorded.';
+        body.appendChild(bMsg);
+        body.scrollTop = body.scrollHeight;
+      }
+    }
+  </script>
 </body>
 </html>`);
         return;

@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OjaRadar & PulseRemind — In-Chat Generative Deal Widget</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --accent-green: #10b981;
+      --accent-green-dark: #059669;
+      --accent-blue: #3b82f6;
+      --accent-amber: #f59e0b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text-main);
+      padding: 16px 12px;
+      line-height: 1.5;
+    }
+    .widget-container {
+      max-width: 580px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+    }
+    .widget-header {
+      background: linear-gradient(135deg, #064e3b 0%, #111827 100%);
+      border-bottom: 1px solid var(--card-border);
+      padding: 16px 20px;
+    }
+    .badge-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    .badge-live::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .product-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #ffffff;
+      line-height: 1.3;
+    }
+    .product-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .widget-body {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    /* Slider Section */
+    .section-title {
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .slider-track-wrap {
+      position: relative;
+      margin: 12px 0 6px;
+    }
+    .tradeoff-slider {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(to right, #3b82f6 0%, #10b981 50%, #f59e0b 100%);
+      outline: none;
+      cursor: pointer;
+    }
+    .tradeoff-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #ffffff;
+      border: 3px solid #10b981;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    }
+    .slider-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    /* Archetype Card */
+    .archetype-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+      position: relative;
+      transition: all 0.2s ease;
+    }
+    .archetype-card.active {
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.05);
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+    }
+    .archetype-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .archetype-name {
+      font-size: 16px;
+      font-weight: 800;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .archetype-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: #374151;
+      color: #cbd5e1;
+    }
+    .price-display {
+      text-align: right;
+    }
+    .landed-amount {
+      font-size: 24px;
+      font-weight: 900;
+      color: #34d399;
+      line-height: 1;
+    }
+    .price-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+    .trust-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+    .trust-item {
+      font-size: 12px;
+      color: #cbd5e1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    /* Zone Selector */
+    .zone-group {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .zone-btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s ease;
+    }
+    .zone-btn.selected {
+      background: #064e3b;
+      border-color: #10b981;
+      color: #ffffff;
+    }
+    .zone-sub {
+      display: block;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-top: 2px;
+    }
+    /* CTA Actions */
+    .action-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .btn-main {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #10b981;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 15px;
+      text-decoration: none;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn-wa {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #25d366;
+      color: #064e3b;
+      font-weight: 800;
+      font-size: 15px;
+      text-decoration: none;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+    }
+    .quote-box {
+      background: #0f172a;
+      border: 1px dashed #334155;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="widget-container">
+    <div class="widget-header">
+      <div class="badge-bar">
+        <span class="badge-live">Live Market Frontier</span>
+        <span style="font-size: 12px; color: #9ca3af;">OjaRadar Engine</span>
+      </div>
+      <h1 class="product-title" id="prodTitle">Hisense 7kg Front Load Washing Machine</h1>
+      <p class="product-sub">Target Threshold: ₦350,000 • Destination: <span id="destZoneLabel">Lagos</span></p>
+    </div>
+
+    <div class="widget-body">
+      <!-- 1. Visual Trade-Off Slider -->
+      <div>
+        <div class="section-title">
+          <span>⚖️ Price vs Risk Trade-Off Slider</span>
+          <span id="sliderModeLabel" style="color: #34d399; font-weight: 700;">Market Stall (Lowest Price)</span>
+        </div>
+        <div class="slider-track-wrap">
+          <input type="range" min="0" max="100" value="100" class="tradeoff-slider" id="tradeoffSlider" oninput="updateArchetype(this.value)" />
+        </div>
+        <div class="slider-labels">
+          <span>Official Store (Zero Risk)</span>
+          <span>Social Direct</span>
+          <span>Alaba Stall (Lowest Price)</span>
+        </div>
+      </div>
+
+      <!-- 2. Active Archetype Presentation -->
+      <div class="archetype-card active" id="archetypeCard">
+        <div class="archetype-header">
+          <div>
+            <div class="archetype-name" id="archName">🏪 Alaba Market Stall Direct</div>
+            <div class="archetype-tag" id="archTag">Challenger • Same-Day Dispatch</div>
+          </div>
+          <div class="price-display">
+            <div class="landed-amount" id="archPrice">₦335,000</div>
+            <div class="price-sub" id="freightSub">Base: ₦335,000 + Freight: Free</div>
+          </div>
+        </div>
+
+        <div class="trust-grid">
+          <div class="trust-item" id="trustLoc">📍 Shop B12, Alaba Int'l</div>
+          <div class="trust-item" id="trustPod">🛡️ Pay on Delivery (POD)</div>
+          <div class="trust-item" id="trustWarranty">🏷️ Stall Shop Warranty</div>
+          <div class="trust-item" id="trustProof">📹 Video Inspection Ready</div>
+        </div>
+      </div>
+
+      <!-- 3. Regional Destination Selector -->
+      <div>
+        <div class="section-title">
+          <span>🚚 Select Destination Zone</span>
+          <span id="freightCostLabel" style="color: #94a3af;">Freight: ₦0 (Free Pickup)</span>
+        </div>
+        <div class="zone-group">
+          <button class="zone-btn selected" onclick="selectZone('lagos', 0)">
+            Lagos
+            <span class="zone-sub">Free / ₦2.5k Rider</span>
+          </button>
+          <button class="zone-btn" onclick="selectZone('abuja', 11000)">
+            Abuja
+            <span class="zone-sub">+₦11,000 (1-2 days)</span>
+          </button>
+          <button class="zone-btn" onclick="selectZone('interstate', 22000)">
+            Interstate
+            <span class="zone-sub">+₦22,000 (Nationwide)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4. 1-Click WhatsApp Quote & Direct Checkout -->
+      <div class="action-container">
+        <a class="btn-wa" id="waBtn" href="#" target="_blank" rel="noopener">
+          💬 Negotiate on WhatsApp (Pre-Filled Quote) &rarr;
+        </a>
+        <a class="btn-main" id="officialBtn" href="/demo/deal-portal" target="_blank" rel="noopener">
+          🛒 View Official Brand Listing &rarr;
+        </a>
+      </div>
+
+      <!-- Tamper-Evident HMAC Quote Preview -->
+      <div class="quote-box">
+        <strong>Pre-Filled Quote Token:</strong>
+        <span id="quotePreview" style="color: #e2e8f0;">Loading HMAC quote...</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const archetypes = {
+      official: {
+        name: '🛡️ Fouani / Official Store',
+        tag: 'Official Anchor • Zero Risk',
+        basePrice: 365000,
+        loc: '📍 Official Brand Warehouse',
+        pod: '💳 Formal Invoice / Prepayment',
+        warranty: '🏷️ 2-Year Brand Warranty',
+        proof: '⚡ 100% Genuine Guaranteed'
+      },
+      direct: {
+        name: '📱 Catlog / Bumpa Direct Store',
+        tag: 'Social Merchant • Bundled Perks',
+        basePrice: 350000,
+        loc: '📍 Ikeja / Verified Hub',
+        pod: '🛡️ Partial Deposit / POD',
+        warranty: '🏷️ 1-Year Store Warranty',
+        proof: '🎁 Free Install Kit Included'
+      },
+      stall: {
+        name: '🏪 Alaba Market Stall Direct',
+        tag: 'Challenger • Same-Day Dispatch',
+        basePrice: 335000,
+        loc: '📍 Shop B12, Alaba Int\'l',
+        pod: '🛡️ Pay on Delivery (POD)',
+        warranty: '🏷️ Stall Shop Warranty',
+        proof: '📹 Video Inspection Ready'
+      }
+    };
+
+    let currentArchetypeKey = 'stall';
+    let currentFreight = 0;
+    let currentZone = 'Lagos';
+
+    function updateArchetype(val) {
+      const v = parseInt(val, 10);
+      const modeLabel = document.getElementById('sliderModeLabel');
+      if (v < 34) {
+        currentArchetypeKey = 'official';
+        modeLabel.textContent = 'Official Store (Zero Risk)';
+        modeLabel.style.color = '#3b82f6';
+      } else if (v < 67) {
+        currentArchetypeKey = 'direct';
+        modeLabel.textContent = 'Social Direct (Balanced)';
+        modeLabel.style.color = '#10b981';
+      } else {
+        currentArchetypeKey = 'stall';
+        modeLabel.textContent = 'Market Stall (Lowest Price)';
+        modeLabel.style.color = '#f59e0b';
+      }
+      render();
+    }
+
+    function selectZone(zoneKey, freight) {
+      currentFreight = freight;
+      currentZone = zoneKey.charAt(0).toUpperCase() + zoneKey.slice(1);
+      document.querySelectorAll('.zone-btn').forEach((btn, idx) => {
+        const zones = ['lagos', 'abuja', 'interstate'];
+        if (zones[idx] === zoneKey) btn.classList.add('selected');
+        else btn.classList.remove('selected');
+      });
+      document.getElementById('destZoneLabel').textContent = currentZone;
+      document.getElementById('freightCostLabel').textContent = freight === 0 ? 'Freight: ₦0 (Free Pickup)' : `Freight: +₦${freight.toLocaleString('en-NG')}`;
+      render();
+    }
+
+    function render() {
+      const data = archetypes[currentArchetypeKey];
+      const landed = data.basePrice + currentFreight;
+
+      document.getElementById('archName').textContent = data.name;
+      document.getElementById('archTag').textContent = data.tag;
+      document.getElementById('archPrice').textContent = '₦' + landed.toLocaleString('en-NG');
+      document.getElementById('freightSub').textContent = `Base: ₦${data.basePrice.toLocaleString('en-NG')} + Freight: ₦${currentFreight.toLocaleString('en-NG')}`;
+
+      document.getElementById('trustLoc').textContent = data.loc;
+      document.getElementById('trustPod').textContent = data.pod;
+      document.getElementById('trustWarranty').textContent = data.warranty;
+      document.getElementById('trustProof').textContent = data.proof;
+
+      // Build WhatsApp Pre-filled message with quote ref
+      const quoteId = 'OJA-' + Math.floor(100000 + Math.random() * 900000);
+      const text = `Hello, I saw your listing on OjaRadar for Hisense 7kg Front Load Washer. Landed Quote: ₦${landed.toLocaleString('en-NG')} to ${currentZone}. Ref: #${quoteId}. Is Pay on Delivery (POD) confirmed?`;
+      
+      const waUrl = 'https://wa.me/2348023456789?text=' + encodeURIComponent(text);
+      document.getElementById('waBtn').href = waUrl;
+      document.getElementById('quotePreview').textContent = text;
+    }
+
+    render();
+  </script>
+</body>
+</html>
