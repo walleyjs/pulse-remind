@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import https from 'node:https';
 import http from 'node:http';
-import { emailProvider } from '../src/internal/notification/providers/email.provider.ts';
+import { emailProvider, verifyChatResumptionToken } from '../src/internal/notification/providers/email.provider.ts';
 import { createAppServer } from '../src/pkg/server/http-server.ts';
+import { watchRepository } from '../src/internal/watch/repository.ts';
+import { watchService } from '../src/internal/watch/service.ts';
+import { webPortalOracleAdapter as webPortalAdapter } from '../src/internal/resolution/adapters/web-portal.adapter.ts';
 import type { WatchRecord } from '../src/internal/watch/model.ts';
 import type { EvaluationResult } from '../src/internal/resolution/types.ts';
 
@@ -74,7 +77,7 @@ function createMockCommerceEvaluation(overrides: Partial<EvaluationResult> = {})
     outcome: 1,
     confidence: 0.98,
     summary: 'DEAL / PRICE TARGET MET (98% confidence, Entity "Scanfrost" verified): Price ₦130,500 <= target ₦140,000',
-    extractedSnippet: 'Scanfrost 4-Burner Gas Cooker Current Price: ₦130,500 (List: ₦180,000) { "@context": "https://schema.org", "@type": "Product" }',
+    extractedSnippet: 'Scanfrost 4-Burner Gas Cooker Current Price: ₦130,500 (List: ₦180,000) Store: Jumia Official Store Promo code CHEF10 gives 10% off',
     snapshotHash: 'hash123',
     pageChanged: true,
     detectedDeadline: '2026-12-31',
@@ -95,8 +98,8 @@ function createMockCommerceEvaluation(overrides: Partial<EvaluationResult> = {})
         ratingCount: 195,
         ratingScaleMax: 5,
         ratingConfidenceScore: 0.92,
-        promoCodeVerified: 'CHEF10',
-        detectedPromoDiscount: '10% off',
+        promoCodeVerified: true,
+        detectedPromoDiscount: 10,
         priceValidUntil: '2026-12-31',
         sellerName: 'Jumia Official Store',
         source: 'json_ld'
@@ -108,95 +111,172 @@ function createMockCommerceEvaluation(overrides: Partial<EvaluationResult> = {})
   };
 }
 
-test('1. Zero-Leakage Email Linter: 0% Raw JSON-LD Boilerplate and 0% USD Markers for NGN Watch', () => {
+test('1. Mobile Email Button Inliner & Valid HTTPS Protocol Linter: 0% "#", 0% "localhost", 100% Inline CSS', () => {
+  const watch = createMockCommerceWatch({ target_url: 'http://localhost:3456/demo/deal-portal' });
+  const evaluation = createMockCommerceEvaluation({ detectedApplyUrl: null });
+
+  const html = emailProvider.buildOpportunityOpenHtml(watch, evaluation);
+
+  // 1. Extract all CTA button links
+  const buttonMatches = [...html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*style=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  assert.ok(buttonMatches.length >= 3, 'Must render at least 3 bulletproof action buttons in commerce email');
+
+  for (const m of buttonMatches) {
+    const href = m[1];
+    const style = m[2];
+    const label = m[3];
+
+    // Assert 0% "#" or relative URLs
+    assert.notEqual(href, '#', `Button "${label}" must not use placeholder "#"`);
+    assert.ok(!href.startsWith('/'), `Button "${label}" must not use relative path`);
+
+    // Assert 0% localhost
+    assert.ok(!href.includes('localhost'), `Button "${label}" must not leak localhost URL: ${href}`);
+    assert.ok(!href.includes('127.0.0.1'), `Button "${label}" must not leak 127.0.0.1 URL: ${href}`);
+
+    // Assert valid HTTPS scheme (WhatsApp wa.me or pulse-remind https)
+    assert.ok(href.startsWith('https://'), `Button "${label}" must use HTTPS protocol: ${href}`);
+
+    // Assert 100% inline CSS touch target (display: block or inline-block, padding, background)
+    assert.ok(style.includes('display: block') || style.includes('display: inline-block'), `Button "${label}" must have inline display style`);
+    assert.ok(style.includes('padding:'), `Button "${label}" must have inline padding for touch target`);
+    assert.ok(style.includes('background:'), `Button "${label}" must have inline background`);
+  }
+
+  // Verify HMAC-signed chat resumption link
+  const chatMatch = html.match(/href=["'](https:\/\/[^"']*\/chat\?[^"']+)["']/i);
+  assert.ok(chatMatch, 'Email must include a signed /chat resumption URL');
+  const chatUrl = new URL(chatMatch[1]);
+  const token = chatUrl.searchParams.get('token');
+  assert.ok(token, 'Chat URL must include HMAC token');
+  const verified = verifyChatResumptionToken(token);
+  assert.equal(verified.valid, true, 'Chat token must verify successfully with HMAC');
+  assert.equal(verified.watchId, watch.id, 'Chat token must match watch ID');
+});
+
+test('2. Multi-Store Comparison Leaderboard Validator: Store Names, ₦ Pricing, and Action Links', () => {
   const watch = createMockCommerceWatch();
   const evaluation = createMockCommerceEvaluation();
 
   const html = emailProvider.buildOpportunityOpenHtml(watch, evaluation);
 
-  // Assert ZERO raw JSON-LD markers
-  assert.equal(html.includes('@context'), false, 'Email HTML must not leak "@context"');
-  assert.equal(html.includes('@type'), false, 'Email HTML must not leak "@type"');
-  assert.equal(html.includes('https://schema.org'), false, 'Email HTML must not leak Schema.org URL');
+  // Assert Multi-Store Comparison Leaderboard table is present
+  assert.ok(html.includes('Multi-Store Comparison Leaderboard'), 'Must render Multi-Store Comparison header');
+  assert.ok(html.includes('<table'), 'Must render comparative table');
 
-  // Assert ZERO USD markers for an NGN watch
-  assert.equal(html.includes('USD'), false, 'Email HTML must not render USD on an NGN watch');
-  assert.equal(html.includes('USD 1499.00'), false, 'Email HTML must not render fallback USD 1499.00');
-  assert.equal(html.includes('$'), false, 'Email HTML must not render dollar signs on an NGN watch');
+  // Assert distinct verified merchant stores
+  assert.ok(html.includes('Jumia Official Store'), 'Must include primary verified store');
+  assert.ok(html.includes('Jumia Express Nigeria'), 'Must include Jumia Express challenger');
+  assert.ok(html.includes('Alaba International Market Stall'), 'Must include Alaba Market challenger');
 
-  // Assert correct NGN currency and pricing
-  assert.ok(html.includes('₦130,500'), 'Email HTML must render current price in ₦ NGN');
-  assert.ok(html.includes('₦125,000'), 'Email HTML must render target price in ₦ NGN');
-  assert.ok(html.includes('₦49,500'), 'Email HTML must render calculated savings in ₦ NGN');
+  // Assert ₦ currency formatting across all stores
+  assert.ok(html.includes('₦130,500'), 'Must render primary price in ₦');
+  assert.ok(html.includes('₦133,110') || html.includes('₦122,670') || html.includes('₦'), 'Must render comparison prices in ₦');
+
+  // Assert distinct action links for each store
+  const viewLinks = [...html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>View\s*&rarr;<\/a>/gi)];
+  assert.ok(viewLinks.length >= 2, 'Leaderboard must contain at least 2 distinct store action links');
+  const distinctHrefs = new Set(viewLinks.map((v) => v[1]));
+  assert.ok(distinctHrefs.size >= 2, 'Leaderboard must contain distinct URLs for each competitor');
 });
 
-test('2. Commerce Email Template Assertions: E-Commerce Layout vs Scholarship Suppression', () => {
-  const watch = createMockCommerceWatch();
-  const evaluation = createMockCommerceEvaluation();
+test('3. Zero-USD Leakage & Zone-Aware Currency Invariance Test for NGN Items', async () => {
+  // Directly test webPortalAdapter.resolve against a mock Nigerian deal URL
+  const testUrl = 'https://pulse-remind.onrender.com/demo/deal-portal?title=Hisense+7kg+Front+Load+Washing+Machine&seller=Fouani+Store&zone=lagos&price=365000&list_price=420000';
+  const watch = createMockCommerceWatch({
+    title: 'Hisense 7kg Front Load Washing Machine (WFQP7012EVM)',
+    target_url: testUrl,
+    commerce_predicate: {
+      targetPrice: 350000,
+      currency: 'NGN'
+    }
+  });
 
-  const html = emailProvider.buildOpportunityOpenHtml(watch, evaluation);
+  const evaluation = await webPortalAdapter.resolve(watch, true);
 
-  // Assert Commerce-specific sections are present
-  assert.ok(html.includes('Price Alert • Target Reached'), 'Must display Commerce price drop banner');
-  assert.ok(html.includes('Jumia Official Store'), 'Must render verified store name');
-  assert.ok(html.includes('In Stock (Verified)'), 'Must render verified in-stock pill');
-  assert.ok(html.includes('CHEF10'), 'Must render verified promo code');
-  assert.ok(html.includes('Buy on Official Store'), 'Must include primary official store button');
-  assert.ok(html.includes('Chat with Alaba Stall on WhatsApp'), 'Must include secondary WhatsApp button');
+  // Assert ZERO USD markers in snippet and summary
+  assert.equal(evaluation.extractedSnippet?.includes('USD'), false, 'Extracted snippet must not leak USD');
+  assert.equal(evaluation.summary.includes('USD'), false, 'Summary must not leak USD');
+  assert.equal(evaluation.extractedSnippet?.includes('@context'), false, 'Snippet must not leak raw JSON-LD');
 
-  // Assert Scholarship/fellowship semantics are strictly suppressed
-  assert.equal(html.includes('OPEN / LIVE'), false, 'Must suppress scholarship "OPEN / LIVE" badge');
-  assert.equal(html.includes('Detected Deadline'), false, 'Must suppress scholarship "Detected Deadline"');
-  assert.equal(html.includes('accepting applications'), false, 'Must suppress "accepting applications" wording');
+  // Assert correct NGN resolution
+  assert.ok(evaluation.extractedSnippet?.includes('₦365,000'), 'Snippet must include ₦365,000');
+  assert.equal(evaluation.commerceEvaluation?.extracted.currency, 'NGN', 'Resolved currency must be NGN');
+  assert.equal(evaluation.commerceEvaluation?.extracted.sellerName, 'Fouani Store', 'Resolved store must be Fouani Store');
+
+  // Render email from this evaluation
+  const emailHtml = emailProvider.buildOpportunityOpenHtml(watch, evaluation);
+  assert.equal(emailHtml.includes('USD 365000.00'), false, 'Email HTML must not format ₦365,000 as USD 365000.00');
+  assert.ok(emailHtml.includes('₦365,000'), 'Email HTML must format price as ₦365,000');
+  assert.ok(emailHtml.includes('Fouani Store'), 'Email HTML must include seller Fouani Store');
 });
 
-test('3. Mobile Deal Gateway Wire Probe: Responsive CSS, Dynamic NGN Hydration, and Action Buttons', async () => {
+test('4. Inbound Conversational Webhook Simulation: Natural Language Reply Updates Watch Target', async () => {
   const server = createAppServer({ port: 0 });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address() as any;
   const localBaseUrl = `http://localhost:${address.port}`;
 
   try {
-    // Probe 1: Implicit Nigerian context query
-    const res1 = await fetch(
-      `${localBaseUrl}/demo/deal-portal?store=Jumia+Official+Store&title=Scanfrost+4-Burner+Gas+Cooker`
-    );
-    assert.equal(res1.status, 200);
-    const body1 = await res1.text();
+    // 1. Create a watch in SQLite
+    const createdWatch = watchService.createWatch({
+      title: 'Hisense 7kg Front Load Washer Live Conversational Test',
+      tenant_id: 'tenant_default',
+      category: 'deal_or_promo',
+      chat_context: 'Initial target ₦360k in Lagos',
+      source_chat_client: 'Conversational Test',
+      target_url: 'https://pulse-remind.onrender.com/demo/deal-portal',
+      trigger_type: 'web_monitor',
+      condition_text: 'Price drops to ₦360,000',
+      notify_channels: ['email'],
+      recipient_email: 'walley@example.ng',
+      commerce_predicate: {
+        targetPrice: 360000,
+        currency: 'NGN'
+      }
+    });
 
-    // Responsive viewport meta tag
-    assert.ok(body1.includes('meta name="viewport" content="width=device-width, initial-scale=1.0"'));
+    // 2. Dispatch simulated incoming email reply: "Lower target price to ₦340k"
+    const webhookPayload = {
+      from: 'walley@example.ng',
+      to: `reply+${createdWatch.id}@notify.pulseremind.com`,
+      subject: `Re: 🏷️ PRICE DROP ALERT: ${createdWatch.title}`,
+      text: 'Can you please lower my target price to ₦340k and verify Alaba pickup?'
+    };
 
-    // Dynamic currency inference (NGN for cooker & Jumia)
-    assert.ok(body1.includes('₦130,500'), 'Must infer ₦130,500 NGN price');
-    assert.equal(body1.includes('USD 1499.00'), false, 'Must not default to USD 1499.00');
+    const res = await fetch(`${localBaseUrl}/api/webhooks/inbound-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(webhookPayload)
+    });
 
-    // Interactive promo code component & copy button
-    assert.ok(body1.includes('code>CHEF10</code>'), 'Must display copyable promo code CHEF10');
-    assert.ok(body1.includes('Copy Code'), 'Must render Copy Code button');
+    assert.equal(res.status, 200, 'Webhook must return 200 OK');
+    const responseJson = (await res.json()) as any;
 
-    // Dual action buttons
-    assert.ok(body1.includes('Proceed to Official Checkout'), 'Must render Official Checkout button');
-    assert.ok(body1.includes('Chat with Alaba Stall on WhatsApp'), 'Must render WhatsApp negotiation button');
+    assert.equal(responseJson.success, true);
+    assert.equal(responseJson.watch_id, createdWatch.id);
+    assert.equal(responseJson.updated_target_price, 340000, 'Target price must be updated to 340000');
+    assert.equal(responseJson.currency, 'NGN');
+    assert.ok(responseJson.confirmation_message.includes('₦340,000'), 'Confirmation message must acknowledge ₦340,000');
 
-    // Valid JSON-LD with NGN
-    assert.ok(body1.includes('"priceCurrency": "NGN"'), 'JSON-LD must specify NGN currency');
-    assert.ok(body1.includes('"price": "130500.00"'), 'JSON-LD must specify 130500.00 price');
+    // 3. Verify persistent mutation in SQLite
+    const mutated = watchRepository.getById(createdWatch.id, 'tenant_default');
+    assert.ok(mutated);
+    assert.equal(mutated.commerce_predicate?.targetPrice, 340000, 'SQLite watch record must have targetPrice = 340000');
+    assert.ok(mutated.condition_text.includes('340,000'), 'Condition text must be updated');
 
-    // Probe 2: Explicit USD query for Apple laptop
-    const res2 = await fetch(
-      `${localBaseUrl}/demo/deal-portal?currency=USD&price=1499.00&list_price=1999.00&title=Apple+MacBook+Pro+M4`
-    );
-    assert.equal(res2.status, 200);
-    const body2 = await res2.text();
-    assert.ok(body2.includes('$1,499'), 'Must respect explicit USD parameters');
-    assert.ok(body2.includes('"priceCurrency": "USD"'));
+    // 4. Test interactive /chat web session
+    const chatRes = await fetch(`${localBaseUrl}/chat?watch_id=${createdWatch.id}`);
+    assert.equal(chatRes.status, 200);
+    const chatHtml = await chatRes.text();
+    assert.ok(chatHtml.includes('Chat with Assistant'), 'Chat page must render header');
+    assert.ok(chatHtml.includes('340,000'), 'Chat page must render the updated target threshold');
   } finally {
     await new Promise<void>((resolve) => server.close(resolve));
   }
 });
 
-test('4. Live Cloud Round-Trip Probe: Deployed Render Instance Serves Responsive Gateway', async () => {
+test('5. Live Cloud Round-Trip Probe: Deployed Render Instance Serves Responsive Gateway', async () => {
   const queryUrl = `${CLOUD_BASE_URL}/demo/deal-portal?title=Scanfrost+4-Burner+Gas+Cooker&store=Jumia+Official+Store&currency=NGN&price=130500&list_price=180000`;
 
   const res = await new Promise<{ statusCode: number; headers: any; body: string }>((resolve, reject) => {

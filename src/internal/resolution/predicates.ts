@@ -463,15 +463,26 @@ export function evaluateCommercePredicate(
  * Deterministically extracts numeric price-drop, percentage-discount, Wilson rating confidence,
  * and promo-code constraints from natural language prompts or condition text.
  */
-export function extractCommercePredicateFromText(text: string): PricePredicateConfig | null {
+export function extractCommercePredicateFromText(text: string, defaultCurrency?: string): PricePredicateConfig | null {
   if (!text || !text.trim()) return null;
 
   const config: PricePredicateConfig = {};
   let matchedAny = false;
+  const lower = text.toLowerCase();
+  const isLikelyNaira =
+    defaultCurrency === 'NGN' ||
+    lower.includes('lagos') ||
+    lower.includes('abuja') ||
+    lower.includes('nigeria') ||
+    lower.includes('ikeja') ||
+    lower.includes('alaba') ||
+    lower.includes('jumia') ||
+    lower.includes('konga') ||
+    lower.includes('fouani');
 
-  // 1. Target price: "under ₦550,000", "below 450k", "under $1,500", "below $1600", "<= $299.99", "drops to $1200", "under 1.2m", "below N450k"
+  // 1. Target price: "under ₦550,000", "below 450k", "under $1,500", "below $1600", "<= $299.99", "drops to $1200", "under 1.2m", "below N450k", "lower target price to ₦340k"
   const targetPriceMatch = text.match(
-    /(?:under|below|less\s+than|at\s+or\s+below|<=|drops?\s+(?:to|under|below)|target(?:\s+price)?(?:\s+of)?)\s*(?:(₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*([kmKM])?\b/i
+    /(?:under|below|less\s+than|at\s+or\s+below|<=|drops?\s+(?:to|under|below)?|target(?:\s+price)?(?:\s+(?:of|to))?|lower(?:\s+(?:my\s+)?target(?:\s+price)?)?(?:\s+to)?|reduce(?:\s+(?:my\s+)?target(?:\s+price)?)?(?:\s+to)?|set(?:\s+(?:my\s+)?target(?:\s+price)?)?(?:\s+to)?|to)\s*(?:(₦|\bNGN\b|\bN(?=[0-9\s])|\$|\bUSD\b|€|\bEUR\b|£|\bGBP\b)\s*)?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*([kmKM])?\b/i
   );
   if (targetPriceMatch) {
     const rawCurrencyMarker = targetPriceMatch[1];
@@ -495,8 +506,10 @@ export function extractCommercePredicateFromText(text: string): PricePredicateCo
         }
       } else if (multToken === 'k' || multToken === 'm') {
         config.currency = 'NGN';
+      } else if (isLikelyNaira || val > 10000) {
+        config.currency = 'NGN';
       } else {
-        config.currency = 'USD';
+        config.currency = defaultCurrency || 'USD';
       }
       matchedAny = true;
     }
@@ -526,8 +539,10 @@ export function extractCommercePredicateFromText(text: string): PricePredicateCo
           } else {
             config.currency = 'USD';
           }
-        } else if (multToken === 'k' || multToken === 'm') {
+        } else if (multToken === 'k' || multToken === 'm' || isLikelyNaira || val > 10000) {
           config.currency = 'NGN';
+        } else if (defaultCurrency) {
+          config.currency = defaultCurrency;
         }
       }
       matchedAny = true;

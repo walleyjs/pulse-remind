@@ -109,6 +109,40 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
         const promoParam = (parsedDealUrl.searchParams.get('promo') || 'SAVE20').toUpperCase();
         const stockParam = parsedDealUrl.searchParams.get('stock') === 'out' ? 'OutOfStock' : 'InStock';
         const titleParam = parsedDealUrl.searchParams.get('title') || 'Apple MacBook Pro M4 Max 16-inch';
+
+        // Zone-aware and context-sensitive currency derivation
+        let currencyParam = (parsedDealUrl.searchParams.get('currency') || '').toUpperCase();
+        if (!currencyParam) {
+          const lowerTitle = titleParam.toLowerCase();
+          const zone = (parsedDealUrl.searchParams.get('zone') || '').toLowerCase();
+          const store = (parsedDealUrl.searchParams.get('store') || parsedDealUrl.searchParams.get('seller') || '').toLowerCase();
+          const isNigerianContext =
+            zone === 'lagos' ||
+            zone === 'abuja' ||
+            zone === 'interstate' ||
+            lowerTitle.includes('₦') ||
+            lowerTitle.includes('ngn') ||
+            lowerTitle.includes('lagos') ||
+            lowerTitle.includes('abuja') ||
+            lowerTitle.includes('hisense') ||
+            lowerTitle.includes('scanfrost') ||
+            lowerTitle.includes('maxi') ||
+            lowerTitle.includes('cooker') ||
+            lowerTitle.includes('washing') ||
+            store.includes('jumia') ||
+            store.includes('fouani') ||
+            store.includes('konga') ||
+            store.includes('alaba') ||
+            priceParam > 20000;
+          currencyParam = isNigerianContext ? 'NGN' : 'USD';
+        }
+
+        const curSymbol = currencyParam === 'NGN' ? '₦' : currencyParam === 'USD' ? '$' : currencyParam;
+        const sellerParam =
+          parsedDealUrl.searchParams.get('seller') ||
+          parsedDealUrl.searchParams.get('store') ||
+          (currencyParam === 'NGN' ? 'Fouani Official Store' : 'Verified Direct Store');
+
         const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -129,12 +163,12 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
       "@type": "Offer",
       "price": "${priceParam.toFixed(2)}",
       "highPrice": "${listPriceParam.toFixed(2)}",
-      "priceCurrency": "USD",
+      "priceCurrency": "${currencyParam}",
       "availability": "https://schema.org/${stockParam}",
       "priceValidUntil": "2026-12-31",
       "seller": {
         "@type": "Organization",
-        "name": "Verified Direct Store"
+        "name": ${JSON.stringify(sellerParam)}
       }
     }
   }
@@ -142,7 +176,8 @@ export class WebPortalOracleAdapter implements DecisionMakerAdapter {
 </head>
 <body>
   <h1>${titleParam}</h1>
-  <p>Current Price: USD ${priceParam.toFixed(2)} (List: USD ${listPriceParam.toFixed(2)})</p>
+  <p>Current Price: ${curSymbol}${priceParam.toLocaleString('en-NG')} (List: ${curSymbol}${listPriceParam.toLocaleString('en-NG')})</p>
+  <p>Store: ${sellerParam}</p>
   <p>Verified Rating: ${ratingParam} stars (${reviewsParam} reviews)</p>
   <p>Promo Status: Promo code '${promoParam}' gives 20% off at checkout.</p>
 </body>

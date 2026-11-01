@@ -172,10 +172,15 @@ export function rankDiscoveredCandidates(
       ? listing.promoCode?.toUpperCase() === requiredCode.toUpperCase() && promoVerified
       : promoVerified;
 
+    const zone = (targetZone || '').toLowerCase();
+    const isZoneNaira = zone === 'lagos' || zone === 'abuja' || zone === 'interstate';
+    const fallbackCurrency = isZoneNaira ? 'NGN' : (intent.predicate.currency || 'USD');
+    const resolvedCurrency = listing.currency || intent.predicate.currency || fallbackCurrency;
+
     const syntheticCommerceState: ExtractedCommerceState = {
       currentPrice: landedPrice,
       listPrice: listing.listPrice,
-      currency: listing.currency || 'USD',
+      currency: resolvedCurrency,
       availability: 'InStock',
       rawRatingValue: listing.rating,
       ratingCount: listing.reviewCount,

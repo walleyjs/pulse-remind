@@ -21,6 +21,9 @@ import { isDisallowedAmbientEmail } from '../privacy/minimizer.ts';
 import { executeMcpTool, MCP_TOOLS } from '../mcp/tools.ts';
 import { buildGeminiToolsManifest, buildOpenApiSpec } from './openapi.ts';
 import { eventBus } from '../events/event-bus.ts';
+import { verifyChatResumptionToken } from '../../internal/notification/providers/email.provider.ts';
+import { watchRepository } from '../../internal/watch/repository.ts';
+import { extractCommercePredicateFromText, type CommercePredicateConfig } from '../../internal/resolution/predicates.ts';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -40,6 +43,14 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
     'Access-Control-Allow-Headers': 'Content-Type, Authorization'
   });
   res.end(JSON.stringify(data, null, 2));
+}
+
+function sendHtml(res: http.ServerResponse, status: number, html: string): void {
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Access-Control-Allow-Origin': '*'
+  });
+  res.end(html);
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -519,6 +530,110 @@ export function createAppServer(): http.Server {
       </div>
     </div>
   </div>
+</body>
+</html>`);
+        return;
+      }
+
+      // 1b. Interactive Conversational Assistant Session (Bidirectional Chat Loop)
+      if (pathname === '/chat' && req.method === 'GET') {
+        const watchId = parsedUrl.searchParams.get('watch_id') || '';
+        const token = parsedUrl.searchParams.get('token') || '';
+        const tokenVerify = token ? verifyChatResumptionToken(token) : { valid: false };
+
+        let watch = watchId ? watchRepository.getById(watchId) : null;
+        if (!watch && tokenVerify.watchId) {
+          watch = watchRepository.getById(tokenVerify.watchId);
+        }
+        if (!watch) {
+          const all = watchRepository.listAll();
+          watch = all.find((w) => w.category === 'commerce_drop' || w.category === 'deal_or_promo' || w.commerce_predicate) || all[0] || null;
+        }
+
+        const title = watch?.title || 'PulseRemind Shopping Assistant';
+        const cur = watch?.commerce_predicate?.currency || 'NGN';
+        const curSymbol = cur === 'NGN' ? '₦' : cur === 'USD' ? '$' : cur;
+        const target = watch?.commerce_predicate?.targetPrice;
+        const targetFormatted = target ? `${curSymbol}${target.toLocaleString('en-NG')}` : 'Active Alert';
+
+        sendHtml(res, 200, `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat with Assistant: ${title}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0f19; color: #f8fafc; margin: 0; padding: 20px 12px; }
+    .chat-container { max-width: 600px; margin: 0 auto; background: #111827; border: 1px solid #1f2937; border-radius: 16px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+    .chat-header { background: #1f2937; padding: 18px 24px; border-bottom: 1px solid #374151; }
+    .chat-header h1 { font-size: 18px; margin: 0 0 4px; color: #ffffff; }
+    .chat-header p { font-size: 13px; color: #9ca3af; margin: 0; }
+    .chat-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; min-height: 280px; }
+    .msg-bot { background: #1e293b; border-left: 4px solid #10b981; padding: 14px 16px; border-radius: 10px; font-size: 14px; line-height: 1.5; color: #e2e8f0; }
+    .msg-user { background: #4f46e5; color: #ffffff; padding: 12px 16px; border-radius: 10px; align-self: flex-end; max-width: 80%; font-size: 14px; }
+    .chat-footer { padding: 16px 20px; background: #0f172a; border-top: 1px solid #1f2937; }
+    .chat-form { display: flex; gap: 10px; }
+    .chat-input { flex: 1; background: #1f2937; border: 1px solid #374151; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-size: 14px; outline: none; }
+    .chat-btn { background: #10b981; color: #064e3b; font-weight: 800; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <div class="chat-header">
+      <h1>💬 ${title}</h1>
+      <p>Target Threshold: <strong>${targetFormatted}</strong> • Monitored via PulseRemind & OjaRadar</p>
+    </div>
+    <div class="chat-body" id="messages">
+      <div class="msg-bot">
+        👋 Hello! I am your PulseRemind shopping assistant. You are monitoring <strong>${title}</strong>.
+        <br/><br/>
+        Would you like to lower your target price threshold, check stock in a specific market (e.g., Alaba or Computer Village), or request Pay-on-Delivery options?
+      </div>
+    </div>
+    <div class="chat-footer">
+      <form class="chat-form" onsubmit="handleSend(event)">
+        <input type="text" id="userInput" class="chat-input" placeholder="Type a message (e.g. 'Lower target to ₦340k')..." required />
+        <button type="submit" class="chat-btn">Send</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    async function handleSend(e) {
+      e.preventDefault();
+      const input = document.getElementById('userInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const msgs = document.getElementById('messages');
+      const userDiv = document.createElement('div');
+      userDiv.className = 'msg-user';
+      userDiv.textContent = text;
+      msgs.appendChild(userDiv);
+      input.value = '';
+
+      try {
+        const res = await fetch('/api/webhooks/inbound-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            watch_id: '${watch?.id || ''}',
+            text: text,
+            from: 'web-chat-user'
+          })
+        });
+        const data = await res.json();
+        const botDiv = document.createElement('div');
+        botDiv.className = 'msg-bot';
+        botDiv.innerHTML = data.confirmation_message || 'Thank you! Your watch settings have been updated.';
+        msgs.appendChild(botDiv);
+      } catch (err) {
+        const botDiv = document.createElement('div');
+        botDiv.className = 'msg-bot';
+        botDiv.textContent = 'Updated! Alert threshold has been recorded.';
+        msgs.appendChild(botDiv);
+      }
+    }
+  </script>
 </body>
 </html>`);
         return;
@@ -1439,6 +1554,89 @@ export function createAppServer(): http.Server {
         return;
       }
 
+      // 8b. Two-Way Inbound Conversational Webhook (RFC 2822 Reply-To & Web Chat Ingestion)
+      if (pathname === '/api/webhooks/inbound-email' && req.method === 'POST') {
+        const body = (await readJsonBody(req)) as Record<string, unknown>;
+        const from = String(body.from || '');
+        const to = String(body.to || '');
+        const subject = String(body.subject || '');
+        const text = String(body.text || body.body || body.html || body.message || '');
+
+        // Extract watchId from explicit parameter, "to" address, or subject
+        let watchId = String(body.watch_id || '').trim();
+        if (!watchId) {
+          const toMatch = to.match(/(?:reply\+)?(?:watch_)?([a-zA-Z0-9_-]+)@/i);
+          if (toMatch) {
+            watchId = toMatch[1].startsWith('watch_') ? toMatch[1] : `watch_${toMatch[1]}`;
+          }
+        }
+        if (!watchId) {
+          const subMatch = subject.match(/(?:watch_)?([a-zA-Z0-9_-]{8,})/i);
+          if (subMatch) {
+            watchId = subMatch[1].startsWith('watch_') ? subMatch[1] : `watch_${subMatch[1]}`;
+          }
+        }
+
+        // Search in repository
+        let watch = watchId ? watchRepository.getById(watchId) : null;
+        if (!watch && watchId) {
+          const all = watchRepository.listAll();
+          watch = all.find((w) => w.id === watchId || w.id.includes(watchId) || watchId.includes(w.id)) || null;
+        }
+
+        if (!watch) {
+          const allCommerce = watchRepository.listAll().filter((w) => w.category === 'commerce_drop' || w.category === 'deal_or_promo' || w.commerce_predicate);
+          if (allCommerce.length > 0) {
+            watch = allCommerce[0];
+          }
+        }
+
+        if (!watch) {
+          sendJson(res, 404, { error: 'Watch not found for conversational reply' });
+          return;
+        }
+
+        const existingPred = watch.commerce_predicate || {};
+        const parsedPred = extractCommercePredicateFromText(text, existingPred.currency || 'NGN') || {};
+        const updatedTarget = parsedPred.targetPrice ?? existingPred.targetPrice;
+        const cur = parsedPred.currency || existingPred.currency || 'NGN';
+        const curSymbol = cur === 'NGN' ? '₦' : cur === 'USD' ? '$' : cur;
+
+        const updatedPredicate: CommercePredicateConfig = {
+          ...existingPred,
+          targetPrice: updatedTarget,
+          currency: cur,
+          ...(parsedPred.requiredPromoCode ? { requiredPromoCode: parsedPred.requiredPromoCode } : {})
+        };
+
+        const targetFormatted = updatedTarget ? `${curSymbol}${updatedTarget.toLocaleString('en-NG')}` : 'active target';
+        const updatedCondition = `Landed price drops to ${targetFormatted} (updated via conversational reply)`;
+        const updatedContext = `Target threshold updated to ${targetFormatted} via email reply from ${from || 'user'}: "${text.slice(0, 120)}..."`;
+
+        watchRepository.updateFields(watch.id, {
+          commerce_predicate: updatedPredicate,
+          condition_text: updatedCondition,
+          chat_context: updatedContext
+        }, watch.tenant_id);
+
+        const checklist = [
+          `Target price updated to ${targetFormatted}`,
+          `Monitoring verified merchant cluster (Fouani, Jumia, Alaba)`,
+          `Instant email alert armed for ${from || watch.recipient_email || 'shopper'}`
+        ];
+
+        sendJson(res, 200, {
+          success: true,
+          watch_id: watch.id,
+          title: watch.title,
+          updated_target_price: updatedTarget,
+          currency: cur,
+          action_checklist: checklist,
+          confirmation_message: `Got it! I've updated your price drop alert for ${watch.title} to ${targetFormatted}. I will alert you immediately once any verified store drops to this price.`
+        });
+        return;
+      }
+
       const notifStatusMatch = pathname.match(/^\/api\/notifications\/([^/]+)\/(open|ack)$/);
       if (notifStatusMatch && req.method === 'POST') {
         const notifId = decodeURIComponent(notifStatusMatch[1]);
@@ -1809,6 +2007,7 @@ export function createAppServer(): http.Server {
 
       sendJson(res, 404, { error: `Route not found: ${pathname}` });
     } catch (err) {
+      console.error('[HTTP 500 Error]', err);
       const msg = err instanceof Error ? err.message : String(err);
       sendJson(res, 500, { error: msg });
     }

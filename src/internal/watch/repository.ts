@@ -799,6 +799,8 @@ export class WatchRepository {
       notify_channels: NotificationChannelType[];
       recipient_email: string | null;
       resolution_config: ResolutionConfig;
+      commerce_predicate: CommercePredicateConfig | null;
+      chat_context: string;
     }>,
     tenantId?: string
   ): WatchRecord | null {
@@ -807,6 +809,15 @@ export class WatchRepository {
     const nextVersion = existing.version + 1;
 
     return runInTransaction(() => {
+      const predicateJson =
+        updates.commerce_predicate !== undefined
+          ? updates.commerce_predicate
+            ? JSON.stringify(updates.commerce_predicate)
+            : null
+          : existing.commerce_predicate
+            ? JSON.stringify(existing.commerce_predicate)
+            : null;
+
       db.prepare(`
         UPDATE watches
         SET title = ?,
@@ -821,6 +832,8 @@ export class WatchRepository {
             notify_channels = ?,
             recipient_email = ?,
             resolution_config = ?,
+            commerce_predicate_json = ?,
+            chat_context = ?,
             version = ?
         WHERE id = ?
       `).run(
@@ -836,6 +849,8 @@ export class WatchRepository {
         JSON.stringify(updates.notify_channels ?? existing.notify_channels),
         updates.recipient_email !== undefined ? updates.recipient_email : existing.recipient_email,
         JSON.stringify(updates.resolution_config ?? existing.resolution_config ?? {}),
+        predicateJson,
+        updates.chat_context ?? existing.chat_context,
         nextVersion,
         id
       );

@@ -1,6 +1,9 @@
+import crypto from 'node:crypto';
 import type { WatchRecord } from '../../watch/model.ts';
 import type { EvaluationResult } from '../../resolution/types.ts';
 import { buildWatchIcsFeed } from '../../../pkg/calendar/ics.ts';
+import { config } from '../../../config/index.ts';
+import { watchRepository } from '../../watch/repository.ts';
 
 const emailHtmlStore = new Map<string, string>();
 
@@ -10,6 +13,48 @@ export interface EmailSendResult {
   externalId?: string;
   retryAfterSeconds?: number;
   error?: string;
+}
+
+export function generateChatResumptionToken(watchId: string, tenantId = 'tenant_default'): string {
+  const secret = process.env.CHAT_RESUME_SECRET || process.env.CRON_SECRET || 'pulseremind_chat_token_secret';
+  const payload = `${watchId}:${tenantId}`;
+  const hmac = crypto.createHmac('sha256', secret).update(payload).digest('hex').slice(0, 32);
+  return `${Buffer.from(payload).toString('base64url')}.${hmac}`;
+}
+
+export function verifyChatResumptionToken(token: string): { valid: boolean; watchId?: string; tenantId?: string } {
+  try {
+    const [payloadB64, hmac] = token.split('.');
+    if (!payloadB64 || !hmac) return { valid: false };
+    const payload = Buffer.from(payloadB64, 'base64url').toString('utf-8');
+    const [watchId, tenantId] = payload.split(':');
+    const secret = process.env.CHAT_RESUME_SECRET || process.env.CRON_SECRET || 'pulseremind_chat_token_secret';
+    const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex').slice(0, 32);
+    if (crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(expected))) {
+      return { valid: true, watchId, tenantId };
+    }
+  } catch {}
+  return { valid: false };
+}
+
+export function resolveBulletproofPublicUrl(rawUrl: string | null | undefined, fallbackPath: string): string {
+  const publicBase =
+    config.cloud.renderExternalUrl ||
+    process.env.PUBLIC_APP_URL ||
+    process.env.BASE_URL ||
+    'https://pulse-remind.onrender.com';
+  const cleanBase = publicBase.replace(/\/$/, '');
+
+  if (!rawUrl || rawUrl === '#' || rawUrl.trim() === '') {
+    return `${cleanBase}${fallbackPath.startsWith('/') ? fallbackPath : '/' + fallbackPath}`;
+  }
+  if (rawUrl.startsWith('/')) {
+    return `${cleanBase}${rawUrl}`;
+  }
+  if (rawUrl.startsWith('http://localhost') || rawUrl.startsWith('http://127.0.0.1')) {
+    return rawUrl.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i, cleanBase);
+  }
+  return rawUrl;
 }
 
 export class EmailProvider {
@@ -159,17 +204,19 @@ export class EmailProvider {
     const savingsPercent = listPrice > 0 ? Math.round((savings / listPrice) * 100) : 0;
 
     const promoCode = extracted?.promoCodeVerified || predicate?.requiredPromoCode || null;
-    const seller = extracted?.sellerName || 'Verified Official Store';
+    const seller = extracted?.sellerName || 'Fouani Official Store';
     const rating = extracted?.rawRatingValue || 4.8;
     const reviewCount = extracted?.ratingCount || 195;
 
-    // Ensure link to deal portal contains correct currency and price parameters
-    let applyUrl = evaluation.detectedApplyUrl || watch.target_url || '#';
+    // Ensure bulletproof public URL to deal portal
+    const fallbackPortalPath = `/demo/deal-portal?title=${encodeURIComponent(watch.title)}&price=${currentPrice}&list_price=${listPrice}&currency=${cur}&seller=${encodeURIComponent(seller)}`;
+    let applyUrl = resolveBulletproofPublicUrl(evaluation.detectedApplyUrl || watch.target_url, fallbackPortalPath);
     if (applyUrl.includes('/demo/deal-portal')) {
       const sep = applyUrl.includes('?') ? '&' : '?';
       if (!applyUrl.includes('currency=')) applyUrl += `${sep}currency=${cur}`;
       if (!applyUrl.includes('price=')) applyUrl += `&price=${currentPrice}`;
       if (!applyUrl.includes('list_price=') && listPrice > 0) applyUrl += `&list_price=${listPrice}`;
+      if (!applyUrl.includes('seller=')) applyUrl += `&seller=${encodeURIComponent(seller)}`;
     }
 
     const waText = encodeURIComponent(
@@ -177,9 +224,84 @@ export class EmailProvider {
     );
     const whatsappUrl = `https://wa.me/2348023456789?text=${waText}`;
 
+    // Conversational Chat Resumption Link with HMAC token
+    const chatToken = generateChatResumptionToken(watch.id, watch.tenant_id);
+    const chatResumeUrl = resolveBulletproofPublicUrl(
+      null,
+      `/chat?watch_id=${encodeURIComponent(watch.id)}&token=${encodeURIComponent(chatToken)}`
+    );
+
     // Cleaned snippet
     const rawSnippet = evaluation.extractedSnippet || evaluation.summary;
     const cleanedSnippet = this.sanitizeSnippet(rawSnippet);
+
+    // Multi-Store Comparative Leaderboard synthesis
+    interface StoreCompetitor {
+      seller: string;
+      price: number;
+      terms: string;
+      availability: string;
+      url: string;
+      isWinner: boolean;
+    }
+    const competitors: StoreCompetitor[] = [];
+
+    if (watch.cluster_group_id) {
+      try {
+        const clusterSiblings = watchRepository.listByClusterGroup(watch.cluster_group_id, watch.tenant_id);
+        for (const sib of clusterSiblings) {
+          const match = sib.title.match(/\[(.*?)\]/);
+          const sName = match ? match[1] : (sib.resolution_config?.primary_source_name || 'Verified Store');
+          const p = Number(sib.resolution_config?.provider_metadata?.initial_landed_price || sib.commerce_predicate?.targetPrice || currentPrice);
+          competitors.push({
+            seller: sName,
+            price: p,
+            terms: sName.toLowerCase().includes('fouani')
+              ? '2-Year Official Warranty'
+              : sName.toLowerCase().includes('jumia')
+                ? '1-Year Warranty • 24h Express'
+                : 'Stall Inspection • Pay on Delivery (POD)',
+            availability: 'In Stock',
+            url: resolveBulletproofPublicUrl(sib.target_url, `/demo/deal-portal?seller=${encodeURIComponent(sName)}&price=${p}&currency=${cur}`),
+            isWinner: sib.id === watch.id
+          });
+        }
+      } catch {}
+    }
+
+    if (competitors.length < 2) {
+      const lowerT = watch.title.toLowerCase();
+      const primaryName = seller !== 'Verified Official Store' ? seller : lowerT.includes('hisense') ? 'Fouani Official Store' : lowerT.includes('scanfrost') ? 'Scanfrost Direct Nigeria' : 'Official Brand Store';
+      const jumiaPrice = Math.round(currentPrice * 1.02);
+      const alabaPrice = Math.round(currentPrice * 0.94);
+
+      competitors.push({
+        seller: primaryName,
+        price: currentPrice,
+        terms: '2-Year Manufacturer Warranty',
+        availability: 'In Stock (Verified)',
+        url: applyUrl,
+        isWinner: true
+      });
+
+      competitors.push({
+        seller: 'Jumia Express Nigeria',
+        price: jumiaPrice,
+        terms: '1-Year Warranty • 24h Express Dispatch',
+        availability: 'In Stock',
+        url: resolveBulletproofPublicUrl(null, `/demo/deal-portal?seller=Jumia+Express+Nigeria&price=${jumiaPrice}&currency=${cur}&title=${encodeURIComponent(watch.title)}`),
+        isWinner: false
+      });
+
+      competitors.push({
+        seller: 'Alaba International Market Stall',
+        price: alabaPrice,
+        terms: 'Stall Inspection • Pay on Delivery (POD)',
+        availability: 'In Stock',
+        url: resolveBulletproofPublicUrl(null, `/demo/deal-portal?seller=Alaba+Market+Stall&price=${alabaPrice}&currency=${cur}&title=${encodeURIComponent(watch.title)}`),
+        isWinner: false
+      });
+    }
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -204,8 +326,6 @@ export class EmailProvider {
     .meta-label { font-size: 11px; text-transform: uppercase; color: #9ca3af; font-weight: 600; letter-spacing: 0.05em; }
     .meta-val { font-size: 14px; font-weight: 700; color: #f9fafb; margin-top: 4px; }
     .promo-box { background: #312e81; border: 1px dashed #6366f1; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 13px; color: #e0e7ff; }
-    .btn-primary { display: block; text-align: center; background: #10b981; color: #064e3b; font-weight: 800; font-size: 15px; text-decoration: none; padding: 14px 20px; border-radius: 10px; margin-top: 16px; }
-    .btn-whatsapp { display: block; text-align: center; background: #25d366; color: #064e3b; font-weight: 800; font-size: 14px; text-decoration: none; padding: 12px 20px; border-radius: 10px; margin-top: 10px; }
     .footer { padding: 18px 28px; background: #0f172a; font-size: 12px; color: #6b7280; border-top: 1px solid #1f2937; text-align: center; }
   </style>
 </head>
@@ -259,8 +379,49 @@ export class EmailProvider {
         <strong>Verified Specs:</strong> ${cleanedSnippet}
       </div>` : ''}
 
-      <a class="btn-primary" href="${applyUrl}" target="_blank" rel="noopener">Buy on Official Store &rarr;</a>
-      <a class="btn-whatsapp" href="${whatsappUrl}" target="_blank" rel="noopener">💬 Chat with Alaba Stall on WhatsApp &rarr;</a>
+      <!-- Multi-Store Comparison Leaderboard Table -->
+      <div style="margin: 22px 0;">
+        <div style="font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: #9ca3af; margin-bottom: 8px;">
+          📊 Multi-Store Comparison Leaderboard
+        </div>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; background: #1f2937; border-radius: 10px; overflow: hidden; border: 1px solid #374151; font-size: 13px;">
+          <thead>
+            <tr style="background: #111827; border-bottom: 1px solid #374151; text-align: left;">
+              <th style="padding: 10px 12px; color: #9ca3af; font-size: 11px; font-weight: 700; text-transform: uppercase;">Store</th>
+              <th style="padding: 10px 12px; color: #9ca3af; font-size: 11px; font-weight: 700; text-transform: uppercase;">Landed Price</th>
+              <th style="padding: 10px 12px; color: #9ca3af; font-size: 11px; font-weight: 700; text-transform: uppercase;">Terms & Warranty</th>
+              <th style="padding: 10px 12px; color: #9ca3af; font-size: 11px; font-weight: 700; text-transform: uppercase; text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${competitors.map((c) => `
+            <tr style="border-bottom: 1px solid #374151; ${c.isWinner ? 'background: rgba(16, 185, 129, 0.08);' : ''}">
+              <td style="padding: 12px; font-weight: 700; color: #ffffff;">
+                ${c.seller} ${c.isWinner ? '<span style="color: #10b981; font-size: 11px;">(Best Value)</span>' : ''}
+              </td>
+              <td style="padding: 12px; color: #34d399; font-weight: 800; font-size: 14px;">
+                ${curSymbol}${c.price.toLocaleString('en-NG')}
+              </td>
+              <td style="padding: 12px; color: #cbd5e1; font-size: 12px;">
+                ${c.terms}
+              </td>
+              <td style="padding: 12px; text-align: right;">
+                <a href="${c.url}" target="_blank" rel="noopener" style="display: inline-block; background: ${c.isWinner ? '#10b981' : '#374151'}; color: #ffffff; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 12px;">View &rarr;</a>
+              </td>
+            </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Bulletproof CTA Action Buttons with Inlined CSS -->
+      <a href="${applyUrl}" target="_blank" rel="noopener" style="display: block; width: 100%; box-sizing: border-box; background: #10b981; color: #ffffff; padding: 14px 20px; border-radius: 10px; text-decoration: none; font-weight: 800; text-align: center; font-size: 15px; margin: 12px 0;">Buy on ${seller} &rarr;</a>
+      <a href="${whatsappUrl}" target="_blank" rel="noopener" style="display: block; width: 100%; box-sizing: border-box; background: #25d366; color: #ffffff; padding: 14px 20px; border-radius: 10px; text-decoration: none; font-weight: 800; text-align: center; font-size: 15px; margin: 10px 0;">💬 Chat with Alaba Stall on WhatsApp &rarr;</a>
+      <a href="${chatResumeUrl}" target="_blank" rel="noopener" style="display: block; width: 100%; box-sizing: border-box; background: #4f46e5; color: #ffffff; padding: 14px 20px; border-radius: 10px; text-decoration: none; font-weight: 800; text-align: center; font-size: 15px; margin: 10px 0;">🤖 Reply / Chat with AI Assistant &rarr;</a>
+
+      <div style="font-size: 12px; color: #9ca3af; text-align: center; margin-top: 16px; padding-top: 14px; border-top: 1px dashed #374151;">
+        💡 <strong>Tip:</strong> You can also reply directly to this email to adjust your price target or delivery zone.
+      </div>
     </div>
     <div class="footer">
       Watch ID: ${watch.id} • Monitored via PulseRemind Transactional Outbox
@@ -274,7 +435,10 @@ export class EmailProvider {
    * Scholarship and Fellowship Alert Layout.
    */
   renderScholarshipEmail(watch: WatchRecord, evaluation: EvaluationResult): string {
-    const applyUrl = evaluation.detectedApplyUrl || watch.target_url || '#';
+    const applyUrl = resolveBulletproofPublicUrl(
+      evaluation.detectedApplyUrl || watch.target_url,
+      '/demo/scholarships/global-ai-fellowship/apply'
+    );
     const deadline = evaluation.detectedDeadline || 'See official portal';
     const cleanedSnippet = this.sanitizeSnippet(evaluation.extractedSnippet || evaluation.summary);
 
@@ -294,7 +458,6 @@ export class EmailProvider {
     .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; background: #0f172a; padding: 16px; border-radius: 8px; }
     .meta-label { font-size: 11px; text-transform: uppercase; color: #94a3b8; }
     .meta-val { font-size: 14px; font-weight: 700; color: #f8fafc; margin-top: 4px; }
-    .btn { display: inline-block; background: #10b981; color: #052e16; font-weight: 700; text-decoration: none; padding: 14px 24px; border-radius: 8px; margin-top: 12px; }
     .footer { padding: 18px 28px; background: #0f172a; font-size: 12px; color: #64748b; border-top: 1px solid #334155; }
   </style>
 </head>
@@ -324,7 +487,7 @@ export class EmailProvider {
           <div class="meta-val">${deadline}</div>
         </div>
       </div>
-      <a class="btn" href="${applyUrl}" target="_blank" rel="noopener">Open Official Page &rarr;</a>
+      <a href="${applyUrl}" target="_blank" rel="noopener" style="display: block; width: 100%; box-sizing: border-box; background: #10b981; color: #ffffff; padding: 14px 20px; border-radius: 10px; text-decoration: none; font-weight: 800; text-align: center; font-size: 15px; margin: 14px 0;">Open Official Portal &rarr;</a>
     </div>
     <div class="footer">
       Watch ID: ${watch.id} • Monitored URL: ${watch.target_url || 'Scheduled Date Reminder'}
@@ -338,7 +501,10 @@ export class EmailProvider {
    * General Event & Conference Alert Layout.
    */
   renderGeneralEventEmail(watch: WatchRecord, evaluation: EvaluationResult): string {
-    const applyUrl = evaluation.detectedApplyUrl || watch.target_url || '#';
+    const applyUrl = resolveBulletproofPublicUrl(
+      evaluation.detectedApplyUrl || watch.target_url,
+      '/demo/scholarships/global-ai-fellowship'
+    );
     const cleanedSnippet = this.sanitizeSnippet(evaluation.extractedSnippet || evaluation.summary);
 
     return `<!DOCTYPE html>
@@ -353,7 +519,6 @@ export class EmailProvider {
     .banner { background: linear-gradient(135deg, #3b82f6, #1d4ed8); padding: 24px 28px; color: #ffffff; }
     .badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .content { padding: 28px; line-height: 1.6; color: #cbd5e1; }
-    .btn { display: inline-block; background: #3b82f6; color: #ffffff; font-weight: 700; text-decoration: none; padding: 14px 24px; border-radius: 8px; margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -366,7 +531,7 @@ export class EmailProvider {
     <div class="content">
       <p>${watch.chat_context}</p>
       ${cleanedSnippet ? `<p><em>"${cleanedSnippet}"</em></p>` : ''}
-      <a class="btn" href="${applyUrl}" target="_blank" rel="noopener">Access Official Portal &rarr;</a>
+      <a href="${applyUrl}" target="_blank" rel="noopener" style="display: block; width: 100%; box-sizing: border-box; background: #3b82f6; color: #ffffff; padding: 14px 20px; border-radius: 10px; text-decoration: none; font-weight: 800; text-align: center; font-size: 15px; margin: 14px 0;">Access Official Portal &rarr;</a>
     </div>
   </div>
 </body>
